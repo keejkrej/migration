@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling==1.27.0", "pathspec==0.11.2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "migration"
+version = "0.1.0"
+description = "ND2 single-position segmentation and tracking CLI"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cellpose>=4.1.0",
+    "matplotlib>=3.10.0",
+    "nd2>=0.11.2",
+    "numpy>=2.2,<2.4",
+    "pandas>=2.2,<3",
+    "pytest>=8.4.0",
+    "scipy>=1.15,<1.17",
+    "trackastra>=0.5.2",
+    "torch>=2.0"
+]
+
+[project.scripts]
+migration-track = "migration.cli:main"
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["migration"]
