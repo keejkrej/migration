@@ -94,6 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="greedy",
         help="Trackastra linking mode.",
     )
+    parser.add_argument(
+        "--delta-t",
+        type=int,
+        default=1,
+        help="Maximum frame gap allowed when linking tracks in Trackastra.",
+    )
     return parser
 
 
@@ -105,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--diameter must be greater than 0")
     if args.min_track_length < 0:
         parser.error("--min-track-length must be greater than or equal to 0")
+    if args.delta_t < 1:
+        parser.error("--delta-t must be greater than or equal to 1")
 
     progress = RichProgressReporter()
     try:
@@ -116,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
             diameter=args.diameter,
             min_track_length=args.min_track_length,
             tracking_mode=args.tracking_mode,
+            delta_t=args.delta_t,
             on_progress=progress,
         )
     except Exception as exc:

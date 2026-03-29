@@ -285,6 +285,7 @@ def run_trackastra_tracking(
     masks: np.ndarray,
     device: DeviceSpec,
     tracking_mode: str,
+    delta_t: int,
 ) -> tuple[np.ndarray, dict[int, int]]:
     if not np.any(masks):
         return np.empty((0, 4), dtype=np.float32), {}
@@ -293,7 +294,7 @@ def run_trackastra_tracking(
     from trackastra.tracking import graph_to_napari_tracks
 
     model = Trackastra.from_pretrained("general_2d", device=device.name)
-    track_graph, _tracked_masks = model.track(frames, masks, mode=tracking_mode)
+    track_graph, _tracked_masks = model.track(frames, masks, mode=tracking_mode, delta_t=delta_t)
     tracks, track_graph_map, _track_props = graph_to_napari_tracks(track_graph)
     return np.asarray(tracks, dtype=np.float32), {int(k): int(v) for k, v in track_graph_map.items()}
 
@@ -494,6 +495,7 @@ def run_pipeline(
     diameter: float | None,
     min_track_length: int,
     tracking_mode: str,
+    delta_t: int,
     on_progress: ProgressCallback | None = None,
 ) -> PipelineOutputs:
     resolved_path = Path(nd2_path).expanduser().resolve()
@@ -527,7 +529,7 @@ def run_pipeline(
         total_steps=total_steps,
     )
 
-    tracks, parent_map = run_trackastra_tracking(frames, masks, device, tracking_mode)
+    tracks, parent_map = run_trackastra_tracking(frames, masks, device, tracking_mode, delta_t)
     emit_progress(
         on_progress,
         phase="advance",

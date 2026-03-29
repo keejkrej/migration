@@ -225,7 +225,7 @@ def test_run_pipeline_emits_convert_style_progress_events(
     )
     monkeypatch.setattr(
         "migration.pipeline.run_trackastra_tracking",
-        lambda frames, masks, device, tracking_mode: (np.empty((0, 4), dtype=np.float32), {}),
+        lambda frames, masks, device, tracking_mode, delta_t: (np.empty((0, 4), dtype=np.float32), {}),
     )
 
     run_pipeline(
@@ -236,6 +236,7 @@ def test_run_pipeline_emits_convert_style_progress_events(
         diameter=None,
         min_track_length=MIN_TRACK_LENGTH,
         tracking_mode="greedy",
+        delta_t=1,
         on_progress=events.append,
     )
 
@@ -286,7 +287,7 @@ def test_run_pipeline_writes_outputs_and_segmentation_cache_to_output_dir(
         return mask
 
     monkeypatch.setattr("migration.pipeline.run_cellpose_segmentation_frame", fake_segmentation_frame)
-    monkeypatch.setattr("migration.pipeline.run_trackastra_tracking", lambda frames, masks, device, tracking_mode: (tracks, {}))
+    monkeypatch.setattr("migration.pipeline.run_trackastra_tracking", lambda frames, masks, device, tracking_mode, delta_t: (tracks, {}))
 
     outputs = run_pipeline(
         nd2_path=nd2_path,
@@ -296,6 +297,7 @@ def test_run_pipeline_writes_outputs_and_segmentation_cache_to_output_dir(
         diameter=None,
         min_track_length=MIN_TRACK_LENGTH,
         tracking_mode="greedy",
+        delta_t=1,
     )
 
     assert outputs.overlay_path == output_dir / "sample_pos0_ch0_z0_overlay.png"
@@ -340,8 +342,15 @@ def test_run_pipeline_reuses_cached_segmentations(
 
     captured_masks: dict[str, np.ndarray] = {}
 
-    def fake_tracking(frames: np.ndarray, masks_arg: np.ndarray, device: object, tracking_mode: str) -> tuple[np.ndarray, dict[int, int]]:
+    def fake_tracking(
+        frames: np.ndarray,
+        masks_arg: np.ndarray,
+        device: object,
+        tracking_mode: str,
+        delta_t: int,
+    ) -> tuple[np.ndarray, dict[int, int]]:
         captured_masks["value"] = np.array(masks_arg, copy=True)
+        captured_masks["delta_t"] = np.array(delta_t)
         return np.empty((0, 4), dtype=np.float32), {}
 
     monkeypatch.setattr("migration.pipeline.run_cellpose_segmentation_frame", fake_segmentation_frame)
@@ -355,11 +364,13 @@ def test_run_pipeline_reuses_cached_segmentations(
         diameter=None,
         min_track_length=MIN_TRACK_LENGTH,
         tracking_mode="greedy",
+        delta_t=3,
     )
 
     assert calls["segmentation"] == 1
     assert np.array_equal(captured_masks["value"][0], cached_mask)
     assert np.array_equal(captured_masks["value"][1], computed_mask)
+    assert captured_masks["delta_t"] == 3
     assert outputs.segmentation_path == segmentation_position_dir(output_dir, 0)
     assert np.array_equal(read_segmentation_frame(segmentation_frame_path(output_dir, selection, 1)), computed_mask)
 
@@ -378,6 +389,13 @@ def test_cli_rejects_negative_min_track_length() -> None:
     assert exc_info.value.code == 2
 
 
+def test_cli_rejects_delta_t_below_one() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["sample.nd2", "--position", "0", "--channel", "0", "--z", "0", "--delta-t", "0"])
+
+    assert exc_info.value.code == 2
+
+
 def test_cli_accepts_output_alias(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     recorded: dict[str, object] = {}
 
@@ -389,10 +407,12 @@ def test_cli_accepts_output_alias(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
         diameter: float | None,
         min_track_length: int,
         tracking_mode: str,
+        delta_t: int,
         on_progress: object | None = None,
     ) -> object:
         recorded["out_dir"] = out_dir
         recorded["min_track_length"] = min_track_length
+        recorded["delta_t"] = delta_t
         recorded["on_progress"] = on_progress
 
         class Outputs:
@@ -411,6 +431,7 @@ def test_cli_accepts_output_alias(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert exit_code == 0
     assert recorded["out_dir"] == tmp_path / "out"
     assert recorded["min_track_length"] == DEFAULT_MIN_TRACK_LENGTH
+    assert recorded["delta_t"] == 1
     assert recorded["on_progress"] is not None
     assert "Segmentation:" in captured.out
 
@@ -426,9 +447,11 @@ def test_cli_passes_min_track_length(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         diameter: float | None,
         min_track_length: int,
         tracking_mode: str,
+        delta_t: int,
         on_progress: object | None = None,
     ) -> object:
         recorded["min_track_length"] = min_track_length
+        recorded["delta_t"] = delta_t
 
         class Outputs:
             segmentation_path = tmp_path / "out" / "segmentation" / "Pos0"
@@ -456,3 +479,48 @@ def test_cli_passes_min_track_length(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     assert exit_code == 0
     assert recorded["min_track_length"] == 75
+    assert recorded["delta_t"] == 1
+
+
+def test_cli_passes_delta_t(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    recorded: dict[str, object] = {}
+
+    def fake_run_pipeline(
+        nd2_path: Path,
+        selection: Nd2Selection,
+        out_dir: Path | None,
+        device_name: str,
+        diameter: float | None,
+        min_track_length: int,
+        tracking_mode: str,
+        delta_t: int,
+        on_progress: object | None = None,
+    ) -> object:
+        recorded["delta_t"] = delta_t
+
+        class Outputs:
+            segmentation_path = tmp_path / "out" / "segmentation" / "Pos0"
+            overlay_path = tmp_path / "out" / "sample_overlay.png"
+            trajectories_path = tmp_path / "out" / "sample_trajectories.csv"
+            row_count = 0
+
+        return Outputs()
+
+    monkeypatch.setattr("migration.cli.run_pipeline", fake_run_pipeline)
+
+    exit_code = main(
+        [
+            "sample.nd2",
+            "--position",
+            "0",
+            "--channel",
+            "0",
+            "--z",
+            "0",
+            "--delta-t",
+            "4",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["delta_t"] == 4
