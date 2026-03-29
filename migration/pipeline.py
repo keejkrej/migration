@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -41,7 +41,36 @@ class TrajectoryRow:
 class PipelineOutputs:
     overlay_path: Path
     trajectories_path: Path
+    segmentation_path: Path
     row_count: int
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    phase: str
+    done: int
+    total: int
+    message: str
+
+
+ProgressCallback = Callable[[ProgressEvent], None]
+
+
+DEFAULT_MIN_TRACK_LENGTH = 0
+MIN_TRACK_LENGTH = 50
+
+
+def emit_progress(
+    callback: ProgressCallback | None,
+    *,
+    phase: str,
+    done: int,
+    total: int,
+    message: str,
+) -> None:
+    if callback is None:
+        return
+    callback(ProgressEvent(phase=phase, done=done, total=total, message=message))
 
 
 def nd2_dimension_size(sizes: dict[str, int], key: str) -> int:
@@ -208,6 +237,49 @@ def run_cellpose_segmentation(frames: np.ndarray, device: DeviceSpec, diameter: 
     return np.asarray(masks, dtype=np.int32)
 
 
+def create_cellpose_model(device: DeviceSpec) -> Any:
+    import torch
+    from cellpose import models
+
+    return models.CellposeModel(
+        device=torch.device(device.name),
+        pretrained_model="cpsam",
+        use_bfloat16=device.name != "cpu",
+    )
+
+
+def run_cellpose_segmentation_frame(frame: np.ndarray, model: Any, diameter: float | None) -> np.ndarray:
+    eval_kwargs: dict[str, Any] = {}
+    if diameter is not None:
+        eval_kwargs["diameter"] = diameter
+    masks, _flows, _styles = model.eval([frame.astype(np.float32, copy=False)], **eval_kwargs)
+    if isinstance(masks, list):
+        return np.asarray(masks[0], dtype=np.int32)
+    array = np.asarray(masks, dtype=np.int32)
+    if array.ndim == 3:
+        return np.asarray(array[0], dtype=np.int32)
+    return array
+
+
+def read_segmentation_frame(path: str | Path) -> np.ndarray:
+    import tifffile
+
+    return np.asarray(tifffile.imread(Path(path)), dtype=np.int32)
+
+
+def write_segmentation_frame(path: str | Path, mask: np.ndarray) -> Path:
+    import tifffile
+
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(output_path, np.asarray(mask, dtype=np.int32))
+    return output_path
+
+
+def segmentation_frame_cache_is_usable(frame: np.ndarray, mask: np.ndarray) -> bool:
+    return mask.ndim == 2 and mask.shape == frame.shape
+
+
 def run_trackastra_tracking(
     frames: np.ndarray,
     masks: np.ndarray,
@@ -243,6 +315,17 @@ def build_trajectory_rows(tracks: np.ndarray, parent_map: dict[int, int]) -> lis
         for track in tracks
     ]
     return sorted(rows, key=lambda row: (row.track_id, row.frame))
+
+
+def filter_short_trajectories(rows: list[TrajectoryRow], min_track_length: int = MIN_TRACK_LENGTH) -> list[TrajectoryRow]:
+    if min_track_length <= 1 or not rows:
+        return rows
+
+    counts_by_track: dict[int, int] = {}
+    for row in rows:
+        counts_by_track[row.track_id] = counts_by_track.get(row.track_id, 0) + 1
+
+    return [row for row in rows if counts_by_track[row.track_id] >= min_track_length]
 
 
 def write_trajectories_csv(path: str | Path, rows: list[TrajectoryRow]) -> Path:
@@ -323,13 +406,74 @@ def default_output_dir(nd2_path: str | Path, selection: Nd2Selection) -> Path:
     return Path(nd2_path).resolve().parent / build_output_stem(nd2_path, selection)
 
 
+def segmentation_position_dir(output_dir: str | Path, position: int) -> Path:
+    return Path(output_dir) / "segmentation" / f"Pos{position}"
+
+
+def segmentation_frame_path(output_dir: str | Path, selection: Nd2Selection, time_index: int) -> Path:
+    return segmentation_position_dir(output_dir, selection.position) / (
+        f"img_channel{selection.channel:03d}"
+        f"_position{selection.position:03d}"
+        f"_time{time_index:09d}"
+        f"_z{selection.z:03d}_mask.tif"
+    )
+
+
+def load_or_create_segmentation_masks(
+    frames: np.ndarray,
+    output_dir: str | Path,
+    selection: Nd2Selection,
+    device: DeviceSpec,
+    diameter: float | None,
+    on_progress: ProgressCallback | None = None,
+    total_steps: int = 0,
+) -> tuple[Path, np.ndarray]:
+    position_dir = segmentation_position_dir(output_dir, selection.position)
+    masks: list[np.ndarray] = []
+    model: Any | None = None
+
+    for time_index, frame in enumerate(frames):
+        output_path = segmentation_frame_path(output_dir, selection, time_index)
+        mask: np.ndarray | None = None
+
+        if output_path.exists():
+            try:
+                cached_mask = read_segmentation_frame(output_path)
+            except Exception:
+                cached_mask = None
+            if cached_mask is not None and segmentation_frame_cache_is_usable(frame, cached_mask):
+                mask = cached_mask
+
+        if mask is None:
+            if model is None:
+                model = create_cellpose_model(device)
+            mask = run_cellpose_segmentation_frame(frame, model, diameter)
+            write_segmentation_frame(output_path, mask)
+            progress_message = "Segmenting frames"
+        else:
+            progress_message = "Loading cached segmentations"
+
+        masks.append(np.asarray(mask, dtype=np.int32))
+        emit_progress(
+            on_progress,
+            phase="advance",
+            done=time_index + 1,
+            total=total_steps,
+            message=progress_message,
+        )
+
+    return position_dir, np.stack(masks, axis=0)
+
+
 def run_pipeline(
     nd2_path: str | Path,
     selection: Nd2Selection,
     out_dir: str | Path | None,
     device_name: str,
     diameter: float | None,
+    min_track_length: int,
     tracking_mode: str,
+    on_progress: ProgressCallback | None = None,
 ) -> PipelineOutputs:
     resolved_path = Path(nd2_path).expanduser().resolve()
     if not resolved_path.exists():
@@ -337,13 +481,54 @@ def run_pipeline(
 
     output_dir = Path(out_dir).expanduser().resolve() if out_dir is not None else default_output_dir(resolved_path, selection)
     device = resolve_device(device_name)
-    _scan, frames = load_nd2_timeseries(resolved_path, selection)
-    masks = run_cellpose_segmentation(frames, device, diameter)
-    tracks, parent_map = run_trackastra_tracking(frames, masks, device, tracking_mode)
-    rows = build_trajectory_rows(tracks, parent_map)
-
+    scan, frames = load_nd2_timeseries(resolved_path, selection)
     output_stem = build_output_stem(resolved_path, selection)
+    total_steps = len(scan.times) + 2
+
+    emit_progress(
+        on_progress,
+        phase="start",
+        done=0,
+        total=total_steps,
+        message=(
+            f"Selected 1 position, {len(scan.times)} timepoints, "
+            f"1 channel, 1 z-slice. Total steps: {total_steps}"
+        ),
+    )
+
+    segmentation_path, masks = load_or_create_segmentation_masks(
+        frames,
+        output_dir,
+        selection,
+        device,
+        diameter,
+        on_progress=on_progress,
+        total_steps=total_steps,
+    )
+
+    tracks, parent_map = run_trackastra_tracking(frames, masks, device, tracking_mode)
+    emit_progress(
+        on_progress,
+        phase="advance",
+        done=len(scan.times) + 1,
+        total=total_steps,
+        message="Tracking trajectories",
+    )
+    rows = filter_short_trajectories(build_trajectory_rows(tracks, parent_map), min_track_length=min_track_length)
+
     overlay_path = render_trajectory_overlay(output_dir / f"{output_stem}_overlay.png", frames[0], rows)
     trajectories_path = write_trajectories_csv(output_dir / f"{output_stem}_trajectories.csv", rows)
+    emit_progress(
+        on_progress,
+        phase="finish",
+        done=total_steps,
+        total=total_steps,
+        message=f"Wrote {output_dir}",
+    )
 
-    return PipelineOutputs(overlay_path=overlay_path, trajectories_path=trajectories_path, row_count=len(rows))
+    return PipelineOutputs(
+        overlay_path=overlay_path,
+        trajectories_path=trajectories_path,
+        segmentation_path=segmentation_path,
+        row_count=len(rows),
+    )

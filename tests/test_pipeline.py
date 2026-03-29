@@ -8,13 +8,23 @@ import pytest
 
 from migration.cli import main
 from migration.pipeline import (
+    DEFAULT_MIN_TRACK_LENGTH,
+    MIN_TRACK_LENGTH,
     Nd2Scan,
     Nd2Selection,
+    ProgressEvent,
     TrajectoryRow,
     build_trajectory_rows,
+    filter_short_trajectories,
     nd2_dimension_size,
     read_nd2_frame_2d,
+    read_segmentation_frame,
     render_trajectory_overlay,
+    run_pipeline,
+    segmentation_frame_cache_is_usable,
+    segmentation_frame_path,
+    segmentation_position_dir,
+    write_segmentation_frame,
     validate_selection,
     write_trajectories_csv,
 )
@@ -123,6 +133,21 @@ def test_build_trajectory_rows_preserves_parent_mapping() -> None:
     ]
 
 
+def test_filter_short_trajectories_discards_tracks_shorter_than_minimum() -> None:
+    rows = [
+        TrajectoryRow(track_id=1, parent_track_id=None, frame=frame, y=float(frame), x=float(frame))
+        for frame in range(MIN_TRACK_LENGTH)
+    ] + [
+        TrajectoryRow(track_id=2, parent_track_id=None, frame=frame, y=float(frame), x=float(frame))
+        for frame in range(MIN_TRACK_LENGTH - 1)
+    ]
+
+    filtered = filter_short_trajectories(rows)
+
+    assert len(filtered) == MIN_TRACK_LENGTH
+    assert {row.track_id for row in filtered} == {1}
+
+
 def test_write_trajectories_csv_writes_header_and_rows(tmp_path: Path) -> None:
     output_path = tmp_path / "trajectories.csv"
     rows = [
@@ -155,8 +180,264 @@ def test_render_trajectory_overlay_writes_png(tmp_path: Path) -> None:
     assert output_path.stat().st_size > 0
 
 
+def test_segmentation_frame_cache_is_usable_requires_matching_2d_shape() -> None:
+    frame = np.zeros((3, 4), dtype=np.uint16)
+
+    assert segmentation_frame_cache_is_usable(frame, np.zeros((3, 4), dtype=np.int32))
+    assert not segmentation_frame_cache_is_usable(frame, np.zeros((2, 3, 4), dtype=np.int32))
+    assert not segmentation_frame_cache_is_usable(frame, np.zeros((3, 5), dtype=np.int32))
+
+
+def test_run_pipeline_emits_convert_style_progress_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nd2_path = tmp_path / "sample.nd2"
+    nd2_path.touch()
+    frames = np.arange(2 * 4 * 5, dtype=np.uint16).reshape(2, 4, 5)
+    output_dir = tmp_path / "results"
+    events: list[ProgressEvent] = []
+
+    monkeypatch.setattr(
+        "migration.pipeline.resolve_device",
+        lambda name: type("Device", (), {"name": name})(),
+    )
+    monkeypatch.setattr("migration.pipeline.load_nd2_timeseries", lambda path, selection: (Nd2Scan([0], [0], [0, 1], [0]), frames))
+    monkeypatch.setattr("migration.pipeline.create_cellpose_model", lambda device: object())
+    monkeypatch.setattr(
+        "migration.pipeline.run_cellpose_segmentation_frame",
+        lambda frame, model, diameter: np.zeros_like(frame, dtype=np.int32),
+    )
+    monkeypatch.setattr(
+        "migration.pipeline.run_trackastra_tracking",
+        lambda frames, masks, device, tracking_mode: (np.empty((0, 4), dtype=np.float32), {}),
+    )
+
+    run_pipeline(
+        nd2_path=nd2_path,
+        selection=Nd2Selection(position=0, channel=0, z=0),
+        out_dir=output_dir,
+        device_name="cpu",
+        diameter=None,
+        min_track_length=MIN_TRACK_LENGTH,
+        tracking_mode="greedy",
+        on_progress=events.append,
+    )
+
+    assert [event.phase for event in events] == ["start", "advance", "advance", "advance", "finish"]
+    assert events[0].total == len(frames) + 2
+    assert events[1].message == "Segmenting frames"
+    assert events[2].message == "Segmenting frames"
+    assert events[3].message == "Tracking trajectories"
+    assert events[4].message == f"Wrote {output_dir.resolve()}"
+
+
+def test_run_pipeline_writes_outputs_and_segmentation_cache_to_output_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nd2_path = tmp_path / "sample.nd2"
+    nd2_path.touch()
+    frames = np.arange(2 * 4 * 5, dtype=np.uint16).reshape(2, 4, 5)
+    masks = np.stack(
+        [
+            np.full((4, 5), fill_value=11, dtype=np.int32),
+            np.full((4, 5), fill_value=22, dtype=np.int32),
+        ],
+        axis=0,
+    )
+    long_track = np.array(
+        [[1, frame, 1.0 + frame, 2.0 + frame] for frame in range(MIN_TRACK_LENGTH)],
+        dtype=np.float32,
+    )
+    short_track = np.array(
+        [[2, frame, 10.0 + frame, 20.0 + frame] for frame in range(MIN_TRACK_LENGTH - 1)],
+        dtype=np.float32,
+    )
+    tracks = np.vstack([long_track, short_track])
+    output_dir = tmp_path / "results"
+    calls = {"count": 0}
+
+    monkeypatch.setattr(
+        "migration.pipeline.resolve_device",
+        lambda name: type("Device", (), {"name": name})(),
+    )
+    monkeypatch.setattr("migration.pipeline.load_nd2_timeseries", lambda path, selection: (Nd2Scan([0], [0], [0, 1], [0]), frames))
+    monkeypatch.setattr("migration.pipeline.create_cellpose_model", lambda device: object())
+
+    def fake_segmentation_frame(frame: np.ndarray, model: object, diameter: float | None) -> np.ndarray:
+        mask = masks[calls["count"]]
+        calls["count"] += 1
+        return mask
+
+    monkeypatch.setattr("migration.pipeline.run_cellpose_segmentation_frame", fake_segmentation_frame)
+    monkeypatch.setattr("migration.pipeline.run_trackastra_tracking", lambda frames, masks, device, tracking_mode: (tracks, {}))
+
+    outputs = run_pipeline(
+        nd2_path=nd2_path,
+        selection=Nd2Selection(position=0, channel=0, z=0),
+        out_dir=output_dir,
+        device_name="cpu",
+        diameter=None,
+        min_track_length=MIN_TRACK_LENGTH,
+        tracking_mode="greedy",
+    )
+
+    assert outputs.overlay_path == output_dir / "sample_pos0_ch0_z0_overlay.png"
+    assert outputs.trajectories_path == output_dir / "sample_pos0_ch0_z0_trajectories.csv"
+    assert outputs.segmentation_path == segmentation_position_dir(output_dir, 0)
+    assert outputs.overlay_path.exists()
+    assert outputs.trajectories_path.exists()
+    assert outputs.segmentation_path.exists()
+    assert outputs.row_count == MIN_TRACK_LENGTH
+    assert calls["count"] == 2
+    assert np.array_equal(read_segmentation_frame(segmentation_frame_path(output_dir, Nd2Selection(0, 0, 0), 0)), masks[0])
+    assert np.array_equal(read_segmentation_frame(segmentation_frame_path(output_dir, Nd2Selection(0, 0, 0), 1)), masks[1])
+    csv_lines = outputs.trajectories_path.read_text(encoding="utf-8").splitlines()
+    assert len(csv_lines) == MIN_TRACK_LENGTH + 1
+    assert all(line.startswith("1,") for line in csv_lines[1:])
+
+
+def test_run_pipeline_reuses_cached_segmentations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nd2_path = tmp_path / "sample.nd2"
+    nd2_path.touch()
+    frames = np.arange(2 * 4 * 5, dtype=np.uint16).reshape(2, 4, 5)
+    cached_mask = np.full((4, 5), fill_value=7, dtype=np.int32)
+    computed_mask = np.full((4, 5), fill_value=9, dtype=np.int32)
+    output_dir = tmp_path / "results"
+    selection = Nd2Selection(position=0, channel=0, z=0)
+    write_segmentation_frame(segmentation_frame_path(output_dir, selection, 0), cached_mask)
+    calls = {"segmentation": 0}
+
+    monkeypatch.setattr(
+        "migration.pipeline.resolve_device",
+        lambda name: type("Device", (), {"name": name})(),
+    )
+    monkeypatch.setattr("migration.pipeline.load_nd2_timeseries", lambda path, selection: (Nd2Scan([0], [0], [0, 1], [0]), frames))
+    monkeypatch.setattr("migration.pipeline.create_cellpose_model", lambda device: object())
+
+    def fake_segmentation_frame(frame: np.ndarray, model: object, diameter: float | None) -> np.ndarray:
+        calls["segmentation"] += 1
+        return computed_mask
+
+    captured_masks: dict[str, np.ndarray] = {}
+
+    def fake_tracking(frames: np.ndarray, masks_arg: np.ndarray, device: object, tracking_mode: str) -> tuple[np.ndarray, dict[int, int]]:
+        captured_masks["value"] = np.array(masks_arg, copy=True)
+        return np.empty((0, 4), dtype=np.float32), {}
+
+    monkeypatch.setattr("migration.pipeline.run_cellpose_segmentation_frame", fake_segmentation_frame)
+    monkeypatch.setattr("migration.pipeline.run_trackastra_tracking", fake_tracking)
+
+    outputs = run_pipeline(
+        nd2_path=nd2_path,
+        selection=selection,
+        out_dir=output_dir,
+        device_name="cpu",
+        diameter=None,
+        min_track_length=MIN_TRACK_LENGTH,
+        tracking_mode="greedy",
+    )
+
+    assert calls["segmentation"] == 1
+    assert np.array_equal(captured_masks["value"][0], cached_mask)
+    assert np.array_equal(captured_masks["value"][1], computed_mask)
+    assert outputs.segmentation_path == segmentation_position_dir(output_dir, 0)
+    assert np.array_equal(read_segmentation_frame(segmentation_frame_path(output_dir, selection, 1)), computed_mask)
+
+
 def test_cli_rejects_nonpositive_diameter() -> None:
     with pytest.raises(SystemExit) as exc_info:
         main(["sample.nd2", "--position", "0", "--channel", "0", "--z", "0", "--diameter", "0"])
 
     assert exc_info.value.code == 2
+
+
+def test_cli_rejects_negative_min_track_length() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["sample.nd2", "--position", "0", "--channel", "0", "--z", "0", "--min-track-length", "-1"])
+
+    assert exc_info.value.code == 2
+
+
+def test_cli_accepts_output_alias(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    recorded: dict[str, object] = {}
+
+    def fake_run_pipeline(
+        nd2_path: Path,
+        selection: Nd2Selection,
+        out_dir: Path | None,
+        device_name: str,
+        diameter: float | None,
+        min_track_length: int,
+        tracking_mode: str,
+        on_progress: object | None = None,
+    ) -> object:
+        recorded["out_dir"] = out_dir
+        recorded["min_track_length"] = min_track_length
+        recorded["on_progress"] = on_progress
+
+        class Outputs:
+            segmentation_path = tmp_path / "out" / "segmentation" / "Pos0"
+            overlay_path = tmp_path / "out" / "sample_overlay.png"
+            trajectories_path = tmp_path / "out" / "sample_trajectories.csv"
+            row_count = 0
+
+        return Outputs()
+
+    monkeypatch.setattr("migration.cli.run_pipeline", fake_run_pipeline)
+
+    exit_code = main(["sample.nd2", "--position", "0", "--channel", "0", "--z", "0", "--output", str(tmp_path / "out")])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert recorded["out_dir"] == tmp_path / "out"
+    assert recorded["min_track_length"] == DEFAULT_MIN_TRACK_LENGTH
+    assert recorded["on_progress"] is not None
+    assert "Segmentation:" in captured.out
+
+
+def test_cli_passes_min_track_length(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    recorded: dict[str, object] = {}
+
+    def fake_run_pipeline(
+        nd2_path: Path,
+        selection: Nd2Selection,
+        out_dir: Path | None,
+        device_name: str,
+        diameter: float | None,
+        min_track_length: int,
+        tracking_mode: str,
+        on_progress: object | None = None,
+    ) -> object:
+        recorded["min_track_length"] = min_track_length
+
+        class Outputs:
+            segmentation_path = tmp_path / "out" / "segmentation" / "Pos0"
+            overlay_path = tmp_path / "out" / "sample_overlay.png"
+            trajectories_path = tmp_path / "out" / "sample_trajectories.csv"
+            row_count = 0
+
+        return Outputs()
+
+    monkeypatch.setattr("migration.cli.run_pipeline", fake_run_pipeline)
+
+    exit_code = main(
+        [
+            "sample.nd2",
+            "--position",
+            "0",
+            "--channel",
+            "0",
+            "--z",
+            "0",
+            "--min-track-length",
+            "75",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["min_track_length"] == 75
