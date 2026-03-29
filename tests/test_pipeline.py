@@ -17,6 +17,7 @@ from migration.pipeline import (
     build_trajectory_rows,
     filter_short_trajectories,
     nd2_dimension_size,
+    normalize_track_lengths,
     read_nd2_frame_2d,
     read_segmentation_frame,
     render_trajectory_overlay,
@@ -146,6 +147,20 @@ def test_filter_short_trajectories_discards_tracks_shorter_than_minimum() -> Non
 
     assert len(filtered) == MIN_TRACK_LENGTH
     assert {row.track_id for row in filtered} == {1}
+
+
+def test_normalize_track_lengths_maps_longer_tracks_to_higher_values() -> None:
+    normalized = normalize_track_lengths({1: 10, 2: 20, 3: 30})
+
+    assert normalized[1] == 0.0
+    assert normalized[2] == 0.5
+    assert normalized[3] == 1.0
+
+
+def test_normalize_track_lengths_uses_midpoint_when_all_lengths_match() -> None:
+    normalized = normalize_track_lengths({1: 7, 2: 7})
+
+    assert normalized == {1: 0.5, 2: 0.5}
 
 
 def test_write_trajectories_csv_writes_header_and_rows(tmp_path: Path) -> None:
