@@ -202,7 +202,8 @@ for ((position = FROM; position <= TO; position++)); do
     bash -c "cd \"$REPO_ROOT\" && uv run migration segment \"$ND2\" --position \"$position\" --channel \"$CHANNEL\" --z \"$Z\" --output \"$OUTPUT\""; then
     position_ok=false
   elif ! run_timed "track position ${position}" \
-    bash -c "cd \"$REPO_ROOT\" && uv run migration track \"$ND2\" --position \"$position\" --channel \"$CHANNEL\" --z \"$Z\" --output \"$OUTPUT\" $(printf '%q ' "${EXTRA_ARGS[@]}")"; then
+    bash -c 'cd "$1" && uv run migration track "$2" --position "$3" --channel "$4" --z "$5" --output "$6" "${@:7}"' \
+    _ "$REPO_ROOT" "$ND2" "$position" "$CHANNEL" "$Z" "$OUTPUT" "${EXTRA_ARGS[@]}"; then
     position_ok=false
   fi
 
