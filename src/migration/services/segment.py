@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from migration.core.device import resolve_device
-from migration.core.nd2 import load_nd2_timeseries
+from migration.core.nd2 import load_nd2_timeseries, selection_channel_count
 from migration.core.outputs import load_or_create_segmentation_masks
 from migration.core.types import Nd2Selection, ProgressCallback, SegmentOutputs
 from migration.utils.progress import emit_progress
@@ -23,6 +23,7 @@ def run_segment(
     output_dir = Path(output).expanduser().resolve()
     device = resolve_device()
     scan, frames = load_nd2_timeseries(resolved_path, selection)
+    channel_count = selection_channel_count(selection, scan)
     total_steps = len(scan.times) + 1
 
     emit_progress(
@@ -32,7 +33,7 @@ def run_segment(
         total=total_steps,
         message=(
             f"Selected 1 position, {len(scan.times)} timepoints, "
-            f"1 channel, 1 z-slice. Total steps: {total_steps}"
+            f"{channel_count} channel(s), 1 z-slice. Total steps: {total_steps}"
         ),
     )
 

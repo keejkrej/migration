@@ -7,6 +7,7 @@ from typing import Annotated
 import typer
 
 from migration.app import app
+from migration.core.nd2 import parse_channel_option
 from migration.core.types import Nd2Selection
 from migration.services.segment import run_segment
 from migration.utils.progress import RichProgressReporter
@@ -16,7 +17,10 @@ from migration.utils.progress import RichProgressReporter
 def segment(
     nd2_path: Annotated[Path, typer.Argument(help="Path to the ND2 file.")],
     position: Annotated[int, typer.Option(help="Zero-based ND2 position index.")],
-    channel: Annotated[int, typer.Option(help="Zero-based ND2 channel index.")],
+    channel: Annotated[
+        str,
+        typer.Option(help="Zero-based ND2 channel index, comma-separated list like '0,1', or 'all' for Cellpose."),
+    ],
     z: Annotated[int, typer.Option(help="Zero-based ND2 z-slice index.")],
     output: Annotated[
         Path,
@@ -30,11 +34,16 @@ def segment(
     if diameter is not None and diameter <= 0:
         raise typer.BadParameter("--diameter must be greater than 0", param_hint="--diameter")
 
+    try:
+        selected_channel = parse_channel_option(channel)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--channel") from exc
+
     progress = RichProgressReporter()
     try:
         outputs = run_segment(
             nd2_path=nd2_path,
-            selection=Nd2Selection(position=position, channel=channel, z=z),
+            selection=Nd2Selection(position=position, channel=selected_channel, z=z),
             output=output,
             diameter=diameter,
             on_progress=progress,

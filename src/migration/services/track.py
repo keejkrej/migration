@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from migration.core.device import resolve_device
-from migration.core.nd2 import load_nd2_timeseries
+from migration.core.fusion import fuse_frames_for_tracking
+from migration.core.nd2 import load_nd2_timeseries, selection_channel_count
 from migration.core.outputs import (
     build_output_stem,
     load_segmentation_masks,
@@ -26,6 +27,7 @@ def run_track(
     min_track_length: int,
     tracking_mode: str,
     delta_t: int,
+    track_weights: str | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> TrackOutputs:
     resolved_path = Path(nd2_path).expanduser().resolve()
@@ -35,7 +37,9 @@ def run_track(
     output_dir = Path(output).expanduser().resolve()
     device = resolve_device()
     scan, frames = load_nd2_timeseries(resolved_path, selection)
+    tracking_frames = fuse_frames_for_tracking(frames, track_weights)
     output_stem = build_output_stem(resolved_path, selection)
+    channel_count = selection_channel_count(selection, scan)
     total_steps = len(scan.times) + 2
 
     emit_progress(
@@ -45,7 +49,7 @@ def run_track(
         total=total_steps,
         message=(
             f"Selected 1 position, {len(scan.times)} timepoints, "
-            f"1 channel, 1 z-slice. Total steps: {total_steps}"
+            f"{channel_count} channel(s), 1 z-slice. Total steps: {total_steps}"
         ),
     )
 
@@ -57,7 +61,13 @@ def run_track(
         total_steps=total_steps,
     )
 
-    tracks, parent_map = run_trackastra_tracking(frames, masks, device, tracking_mode, delta_t)
+    tracks, parent_map = run_trackastra_tracking(
+        tracking_frames,
+        masks,
+        device,
+        tracking_mode,
+        delta_t,
+    )
     emit_progress(
         on_progress,
         phase="advance",
@@ -67,7 +77,11 @@ def run_track(
     )
     rows = filter_short_trajectories(build_trajectory_rows(tracks, parent_map), min_track_length=min_track_length)
 
-    overlay_path = render_trajectory_overlay(output_dir / f"{output_stem}_overlay.png", frames[0], rows)
+    overlay_path = render_trajectory_overlay(
+        output_dir / f"{output_stem}_overlay.png",
+        tracking_frames[0],
+        rows,
+    )
     trajectories_path = write_trajectories_csv(output_dir / f"{output_stem}_trajectories.csv", rows)
     emit_progress(
         on_progress,

@@ -11,7 +11,7 @@ requires-python = ">=3.12"
 dependencies = [
     "cellpose>=4.1.0",
     "matplotlib>=3.10.0",
-    "nd2>=0.11.2",
+    "mdat",
     "numpy>=2.2,<2.4",
     "pandas>=2.2,<3",
     "pytest>=8.4.0",
@@ -31,6 +31,7 @@ url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.uv.sources]
+mdat = { git = "https://github.com/keejkrej/mdat.git" }
 torch = { index = "pytorch" }
 
 [tool.hatch.build.targets.wheel]

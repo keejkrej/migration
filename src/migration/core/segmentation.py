@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 
+from migration.core.nd2 import frame_spatial_shape
 from migration.core.types import DeviceSpec
 
 
@@ -41,6 +42,8 @@ def run_cellpose_segmentation_frame(frame: np.ndarray, model: Any, diameter: flo
     eval_kwargs: dict[str, Any] = {}
     if diameter is not None:
         eval_kwargs["diameter"] = diameter
+    if frame.ndim == 3:
+        eval_kwargs["channel_axis"] = 0
     masks, _flows, _styles = model.eval([frame.astype(np.float32, copy=False)], **eval_kwargs)
     if isinstance(masks, list):
         return np.asarray(masks[0], dtype=np.int32)
@@ -66,4 +69,4 @@ def write_segmentation_frame(path: str | Path, mask: np.ndarray) -> Path:
 
 
 def segmentation_frame_cache_is_usable(frame: np.ndarray, mask: np.ndarray) -> bool:
-    return mask.ndim == 2 and mask.shape == frame.shape
+    return mask.ndim == 2 and mask.shape == frame_spatial_shape(frame)

@@ -6,8 +6,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from migration.core.fusion import fuse_frames_for_tracking, parse_track_weights
+from migration.core.nd2 import read_selection_frame, validate_selection
 from migration.main import main
-from migration.core.nd2 import nd2_dimension_size, read_nd2_frame_2d, validate_selection
 from migration.core.outputs import segmentation_frame_path, segmentation_position_dir
 from migration.core.overlay import normalize_track_lengths, render_trajectory_overlay
 from migration.core.segmentation import (
@@ -31,19 +32,139 @@ from migration.services.segment import run_segment
 from migration.services.track import run_track
 
 
-class FakeND2Handle:
+class FakeND2Reader:
     def __init__(self, sizes: dict[str, int], frames: list[np.ndarray], loop_axes: tuple[str, ...]) -> None:
         self.sizes = sizes
         self._frames = frames
+        self.loop_axes = loop_axes
         self.loop_indices = tuple(
             dict(zip(loop_axes, coords))
             for coords in product(*(range(int(sizes[axis])) for axis in loop_axes))
         )
-        self.last_seq_index: int | None = None
+        self.last_coords: tuple[int, int, int, int] | None = None
 
-    def read_frame(self, seq_index: int) -> np.ndarray:
-        self.last_seq_index = seq_index
-        return self._frames[seq_index]
+    def read_frame(self, p: int, t: int, c: int, z: int) -> np.ndarray:
+        self.last_coords = (p, t, c, z)
+        coords = {"P": p, "T": t, "Z": z}
+        seq_key = {axis: coords[axis] for axis in self.loop_axes}
+        seq_index = next(
+            index for index, frame_coords in enumerate(self.loop_indices) if frame_coords == seq_key
+        )
+        frame = self._frames[seq_index]
+        channel_count = int(self.sizes.get("C", 1))
+        if channel_count > 1 and frame.ndim >= 3 and frame.shape[0] == channel_count:
+            return np.asarray(frame[c])
+        if frame.ndim == 3 and frame.shape[-1] == 1:
+            return frame[..., 0]
+        if frame.ndim == 3 and frame.shape[0] == 1:
+            return frame[0]
+        return np.asarray(frame)
+
+
+def test_fuse_frames_normalizes_each_channel_before_equal_weight_fusion() -> None:
+    frames = np.array(
+        [
+            [[[0, 0], [0, 100]], [[100, 0], [100, 0]]],
+            [[[200, 0], [200, 0]], [[0, 0], [0, 100]]],
+        ],
+        dtype=np.uint16,
+    )
+
+    fused = fuse_frames_for_tracking(frames)
+
+    assert fused.shape == (2, 2, 2)
+    assert fused.dtype == np.float32
+    assert np.all(fused >= 0.0)
+    assert np.all(fused <= 1.0)
+    assert fused.sum() > 0.0
+
+
+def test_fuse_frames_respects_custom_weights() -> None:
+    frames = np.array(
+        [
+            [[[0, 0], [0, 100]], [[100, 0], [100, 0]]],
+            [[[200, 0], [200, 0]], [[0, 0], [0, 100]]],
+        ],
+        dtype=np.uint16,
+    )
+
+    equal = fuse_frames_for_tracking(frames, "1,1")
+    weighted = fuse_frames_for_tracking(frames, "1,3")
+
+    assert equal.shape == weighted.shape
+    assert not np.allclose(equal, weighted)
+
+
+def test_parse_track_weights_defaults_to_ones() -> None:
+    assert parse_track_weights(None, 3) == (1.0, 1.0, 1.0)
+
+
+def test_reads_selected_channels_without_using_channel_in_sequence_index() -> None:
+    sizes = {"P": 2, "T": 2, "Z": 2, "C": 3, "Y": 3, "X": 4}
+    frames = [
+        np.stack(
+            [
+                np.full((3, 4), fill_value=seq_index, dtype=np.uint16),
+                np.full((3, 4), fill_value=seq_index + 100, dtype=np.uint16),
+                np.full((3, 4), fill_value=seq_index + 200, dtype=np.uint16),
+            ]
+        )
+        for seq_index in range(8)
+    ]
+    reader = FakeND2Reader(sizes, frames, ("P", "T", "Z"))
+
+    image = read_selection_frame(
+        reader.read_frame,
+        p=1,
+        t=0,
+        z=1,
+        channel=(0, 2),
+        channel_count=3,
+    )
+
+    expected_seq_index = reader.loop_indices.index({"P": 1, "T": 0, "Z": 1})
+    assert reader.last_coords == (1, 0, 2, 1)
+    assert image.shape == (2, 3, 4)
+    assert np.all(image[0] == expected_seq_index)
+    assert np.all(image[1] == expected_seq_index + 200)
+
+
+def test_parse_channel_option_accepts_comma_separated_list() -> None:
+    from migration.core.nd2 import parse_channel_option
+
+    assert parse_channel_option("0,1,2") == (0, 1, 2)
+    assert parse_channel_option("0, 1") == (0, 1)
+    assert parse_channel_option("0,0,1") == (0, 1)
+    assert parse_channel_option("2") == 2
+
+
+def test_reads_all_channels_without_using_channel_in_sequence_index() -> None:
+    sizes = {"P": 2, "T": 2, "Z": 2, "C": 2, "Y": 3, "X": 4}
+    frames = [
+        np.stack(
+            [
+                np.full((3, 4), fill_value=seq_index, dtype=np.uint16),
+                np.full((3, 4), fill_value=seq_index + 100, dtype=np.uint16),
+            ]
+        )
+        for seq_index in range(8)
+    ]
+    reader = FakeND2Reader(sizes, frames, ("P", "T", "Z"))
+
+    image = read_selection_frame(
+        reader.read_frame,
+        p=1,
+        t=0,
+        z=1,
+        channel="all",
+        channel_count=2,
+    )
+
+    expected_seq_index = reader.loop_indices.index({"P": 1, "T": 0, "Z": 1})
+    assert reader.last_coords == (1, 0, 1, 1)
+    assert image.shape == (2, 3, 4)
+    assert np.all(image[0] == expected_seq_index)
+    assert np.all(image[1] == expected_seq_index + 100)
 
 
 def test_reads_channel_from_frame_axes_without_using_channel_in_sequence_index() -> None:
@@ -57,12 +178,19 @@ def test_reads_channel_from_frame_axes_without_using_channel_in_sequence_index()
         )
         for seq_index in range(8)
     ]
-    handle = FakeND2Handle(sizes, frames, ("P", "T", "Z"))
+    reader = FakeND2Reader(sizes, frames, ("P", "T", "Z"))
 
-    image = read_nd2_frame_2d(handle, p=1, t=0, c=1, z=1)
+    image = read_selection_frame(
+        reader.read_frame,
+        p=1,
+        t=0,
+        z=1,
+        channel=1,
+        channel_count=2,
+    )
 
-    expected_seq_index = handle.loop_indices.index({"P": 1, "T": 0, "Z": 1})
-    assert handle.last_seq_index == expected_seq_index
+    expected_seq_index = reader.loop_indices.index({"P": 1, "T": 0, "Z": 1})
+    assert reader.last_coords == (1, 0, 1, 1)
     assert image.shape == (3, 4)
     assert np.all(image == expected_seq_index + 100)
 
@@ -79,18 +207,20 @@ def test_rgb_frame_is_converted_to_grayscale() -> None:
         )
         for seq_index in range(2)
     ]
-    handle = FakeND2Handle(sizes, frames, ("T",))
+    reader = FakeND2Reader(sizes, frames, ("T",))
 
-    image = read_nd2_frame_2d(handle, p=0, t=1, c=0, z=0)
+    image = read_selection_frame(
+        reader.read_frame,
+        p=0,
+        t=1,
+        z=0,
+        channel=0,
+        channel_count=1,
+    )
 
-    assert handle.last_seq_index == 1
+    assert reader.last_coords == (0, 1, 0, 0)
     assert image.shape == (2, 3)
     assert np.all(image == 16)
-
-
-def test_missing_axes_default_to_singleton_size() -> None:
-    assert nd2_dimension_size({"Y": 8, "X": 9}, "P") == 1
-    assert nd2_dimension_size({"Y": 8, "X": 9}, "Z") == 1
 
 
 def test_validate_selection_rejects_out_of_range_indices() -> None:
@@ -193,6 +323,13 @@ def test_render_trajectory_overlay_writes_png(tmp_path: Path) -> None:
 
     assert output_path.exists()
     assert output_path.stat().st_size > 0
+
+
+def test_segmentation_frame_cache_is_usable_accepts_multichannel_frames() -> None:
+    frame = np.zeros((2, 3, 4), dtype=np.uint16)
+    mask = np.zeros((3, 4), dtype=np.int32)
+
+    assert segmentation_frame_cache_is_usable(frame, mask)
 
 
 def test_segmentation_frame_cache_is_usable_requires_matching_2d_shape() -> None:
@@ -424,6 +561,12 @@ def test_run_segment_reuses_cached_segmentations(
     assert np.array_equal(read_segmentation_frame(segmentation_frame_path(output_dir, selection, 1)), computed_mask)
 
 
+def test_cli_rejects_invalid_channel() -> None:
+    exit_code = main(["segment", "sample.nd2", "--position", "0", "--channel", "foo", "--z", "0", "--output", "./results"])
+
+    assert exit_code == 2
+
+
 def test_cli_rejects_nonpositive_diameter() -> None:
     exit_code = main(["segment", "sample.nd2", "--position", "0", "--channel", "0", "--z", "0", "--output", "./results", "--diameter", "0"])
 
@@ -482,10 +625,12 @@ def test_cli_passes_min_track_length(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         min_track_length: int,
         tracking_mode: str,
         delta_t: int,
+        track_weights: str | None = None,
         on_progress: object | None = None,
     ) -> object:
         recorded["min_track_length"] = min_track_length
         recorded["delta_t"] = delta_t
+        recorded["track_weights"] = track_weights
 
         class Outputs:
             overlay_path = tmp_path / "out" / "sample_overlay.png"
@@ -528,9 +673,11 @@ def test_cli_passes_delta_t(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
         min_track_length: int,
         tracking_mode: str,
         delta_t: int,
+        track_weights: str | None = None,
         on_progress: object | None = None,
     ) -> object:
         recorded["delta_t"] = delta_t
+        recorded["track_weights"] = track_weights
 
         class Outputs:
             overlay_path = tmp_path / "out" / "sample_overlay.png"

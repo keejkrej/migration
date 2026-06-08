@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
+
+ChannelSelection = int | Literal["all"] | tuple[int, ...]
 
 
 @dataclass(frozen=True)
 class Nd2Selection:
     position: int
-    channel: int
+    channel: ChannelSelection
     z: int
 
 

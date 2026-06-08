@@ -12,13 +12,14 @@ from migration.core.segmentation import (
     segmentation_frame_cache_is_usable,
     write_segmentation_frame,
 )
+from migration.core.nd2 import channel_selection_label, channel_selection_stem, frame_spatial_shape
 from migration.core.types import DeviceSpec, Nd2Selection, ProgressCallback
 from migration.utils.progress import emit_progress
 
 
 def build_output_stem(nd2_path: str | Path, selection: Nd2Selection) -> str:
     stem = Path(nd2_path).stem
-    return f"{stem}_pos{selection.position}_ch{selection.channel}_z{selection.z}"
+    return f"{stem}_pos{selection.position}_ch{channel_selection_stem(selection.channel)}_z{selection.z}"
 
 
 def default_output_dir(nd2_path: str | Path, selection: Nd2Selection) -> Path:
@@ -31,7 +32,7 @@ def segmentation_position_dir(output_dir: str | Path, position: int) -> Path:
 
 def segmentation_frame_path(output_dir: str | Path, selection: Nd2Selection, time_index: int) -> Path:
     return segmentation_position_dir(output_dir, selection.position) / (
-        f"img_channel{selection.channel:03d}"
+        f"img_channel{channel_selection_label(selection.channel)}"
         f"_position{selection.position:03d}"
         f"_time{time_index:09d}"
         f"_z{selection.z:03d}_mask.tif"

@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 import typer
 
 from migration.app import app
+from migration.core.nd2 import parse_channel_option
 from migration.core.types import DEFAULT_MIN_TRACK_LENGTH, Nd2Selection
 from migration.services.track import run_track
 from migration.utils.progress import RichProgressReporter
@@ -18,12 +19,26 @@ TrackingMode = Literal["greedy", "greedy_nodiv"]
 def track(
     nd2_path: Annotated[Path, typer.Argument(help="Path to the ND2 file.")],
     position: Annotated[int, typer.Option(help="Zero-based ND2 position index.")],
-    channel: Annotated[int, typer.Option(help="Zero-based ND2 channel index.")],
+    channel: Annotated[
+        str,
+        typer.Option(
+            help=(
+                "Zero-based ND2 channel index, comma-separated list like '0,1', or 'all'. "
+                "Must match the segmentation run."
+            ),
+        ),
+    ],
     z: Annotated[int, typer.Option(help="Zero-based ND2 z-slice index.")],
     output: Annotated[
         Path,
         typer.Option(help="Directory containing cached segmentations and trajectory outputs."),
     ],
+    track_weights: Annotated[
+        str | None,
+        typer.Option(
+            help="Comma-separated fusion weights for selected channels. Defaults to equal weights.",
+        ),
+    ] = None,
     min_track_length: Annotated[
         int,
         typer.Option(
@@ -51,15 +66,21 @@ def track(
     if delta_t < 1:
         raise typer.BadParameter("--delta-t must be greater than or equal to 1", param_hint="--delta-t")
 
+    try:
+        selected_channel = parse_channel_option(channel)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--channel") from exc
+
     progress = RichProgressReporter()
     try:
         outputs = run_track(
             nd2_path=nd2_path,
-            selection=Nd2Selection(position=position, channel=channel, z=z),
+            selection=Nd2Selection(position=position, channel=selected_channel, z=z),
             output=output,
             min_track_length=min_track_length,
             tracking_mode=tracking_mode,
             delta_t=delta_t,
+            track_weights=track_weights,
             on_progress=progress,
         )
     except Exception as exc:
