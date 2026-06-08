@@ -15,13 +15,15 @@ dependencies = [
     "numpy>=2.2,<2.4",
     "pandas>=2.2,<3",
     "pytest>=8.4.0",
+    "rich>=14.0.0",
     "scipy>=1.15,<1.17",
     "trackastra>=0.5.2",
-    "torch>=2.0"
+    "torch>=2.0",
+    "typer>=0.24.0",
 ]
 
 [project.scripts]
-migration-track = "migration.cli:main"
+migration = "migration.main:main"
 
 [[tool.uv.index]]
 name = "pytorch"
@@ -32,4 +34,4 @@ explicit = true
 torch = { index = "pytorch" }
 
 [tool.hatch.build.targets.wheel]
-packages = ["migration"]
+packages = ["src/migration"]
