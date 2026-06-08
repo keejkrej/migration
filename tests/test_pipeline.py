@@ -23,6 +23,7 @@ from migration.core.trajectories import (
 )
 from migration.core.types import (
     MIN_TRACK_LENGTH,
+    DEFAULT_CELLPOSE_BATCH_SIZE,
     Nd2Scan,
     Nd2Selection,
     ProgressEvent,
@@ -603,7 +604,7 @@ def test_cli_accepts_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cap
         selection: Nd2Selection,
         output: Path,
         diameter: float | None,
-        cellpose_batch_size: int = 32,
+        cellpose_batch_size: int = DEFAULT_CELLPOSE_BATCH_SIZE,
         on_progress: object | None = None,
     ) -> object:
         recorded["output"] = output
@@ -624,7 +625,7 @@ def test_cli_accepts_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cap
     assert exit_code == 0
     assert recorded["output"] == tmp_path / "out"
     assert recorded["on_progress"] is not None
-    assert recorded["cellpose_batch_size"] == 32
+    assert recorded["cellpose_batch_size"] == DEFAULT_CELLPOSE_BATCH_SIZE
 
 
 def test_cli_rejects_non_positive_cellpose_batch_size() -> None:
@@ -655,7 +656,7 @@ def test_cli_passes_cellpose_batch_size(monkeypatch: pytest.MonkeyPatch, tmp_pat
         selection: Nd2Selection,
         output: Path,
         diameter: float | None,
-        cellpose_batch_size: int = 32,
+        cellpose_batch_size: int = DEFAULT_CELLPOSE_BATCH_SIZE,
         on_progress: object | None = None,
     ) -> object:
         recorded["cellpose_batch_size"] = cellpose_batch_size
