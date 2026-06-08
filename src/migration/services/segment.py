@@ -5,7 +5,7 @@ from pathlib import Path
 from migration.core.device import resolve_device
 from migration.core.nd2 import load_nd2_timeseries, selection_channel_count
 from migration.core.outputs import load_or_create_segmentation_masks
-from migration.core.types import Nd2Selection, ProgressCallback, SegmentOutputs
+from migration.core.types import DEFAULT_CELLPOSE_BATCH_SIZE, Nd2Selection, ProgressCallback, SegmentOutputs
 from migration.utils.progress import emit_progress
 
 
@@ -14,6 +14,7 @@ def run_segment(
     selection: Nd2Selection,
     output: str | Path,
     diameter: float | None,
+    cellpose_batch_size: int = DEFAULT_CELLPOSE_BATCH_SIZE,
     on_progress: ProgressCallback | None = None,
 ) -> SegmentOutputs:
     resolved_path = Path(nd2_path).expanduser().resolve()
@@ -43,6 +44,7 @@ def run_segment(
         selection,
         device,
         diameter,
+        cellpose_batch_size=cellpose_batch_size,
         on_progress=on_progress,
         total_steps=total_steps,
     )

@@ -9,7 +9,12 @@ from migration.core.nd2 import frame_spatial_shape
 from migration.core.types import DeviceSpec
 
 
-def run_cellpose_segmentation(frames: np.ndarray, device: DeviceSpec, diameter: float | None) -> np.ndarray:
+def run_cellpose_segmentation(
+    frames: np.ndarray,
+    device: DeviceSpec,
+    diameter: float | None,
+    batch_size: int,
+) -> np.ndarray:
     import torch
     from cellpose import models
 
@@ -21,6 +26,7 @@ def run_cellpose_segmentation(frames: np.ndarray, device: DeviceSpec, diameter: 
     eval_kwargs: dict[str, Any] = {}
     if diameter is not None:
         eval_kwargs["diameter"] = diameter
+    eval_kwargs["batch_size"] = batch_size
     masks, _flows, _styles = model.eval([frame.astype(np.float32, copy=False) for frame in frames], **eval_kwargs)
     if isinstance(masks, list):
         return np.stack([np.asarray(mask, dtype=np.int32) for mask in masks], axis=0)
@@ -38,8 +44,13 @@ def create_cellpose_model(device: DeviceSpec) -> Any:
     )
 
 
-def run_cellpose_segmentation_frame(frame: np.ndarray, model: Any, diameter: float | None) -> np.ndarray:
-    eval_kwargs: dict[str, Any] = {}
+def run_cellpose_segmentation_frame(
+    frame: np.ndarray,
+    model: Any,
+    diameter: float | None,
+    batch_size: int,
+) -> np.ndarray:
+    eval_kwargs: dict[str, Any] = {"batch_size": batch_size}
     if diameter is not None:
         eval_kwargs["diameter"] = diameter
     if frame.ndim == 3:

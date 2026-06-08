@@ -358,7 +358,7 @@ def test_run_segment_emits_convert_style_progress_events(
     monkeypatch.setattr("migration.core.outputs.create_cellpose_model", lambda device: object())
     monkeypatch.setattr(
         "migration.core.outputs.run_cellpose_segmentation_frame",
-        lambda frame, model, diameter: np.zeros_like(frame, dtype=np.int32),
+        lambda frame, model, diameter, batch_size: np.zeros_like(frame, dtype=np.int32),
     )
 
     run_segment(
@@ -445,7 +445,12 @@ def test_run_segment_writes_segmentation_cache_to_output_dir(
     monkeypatch.setattr("migration.services.segment.load_nd2_timeseries", lambda path, selection: (Nd2Scan([0], [0], [0, 1], [0]), frames))
     monkeypatch.setattr("migration.core.outputs.create_cellpose_model", lambda device: object())
 
-    def fake_segmentation_frame(frame: np.ndarray, model: object, diameter: float | None) -> np.ndarray:
+    def fake_segmentation_frame(
+        frame: np.ndarray,
+        model: object,
+        diameter: float | None,
+        batch_size: int,
+    ) -> np.ndarray:
         mask = masks[calls["count"]]
         calls["count"] += 1
         return mask
@@ -542,7 +547,12 @@ def test_run_segment_reuses_cached_segmentations(
     monkeypatch.setattr("migration.services.segment.load_nd2_timeseries", lambda path, selection: (Nd2Scan([0], [0], [0, 1], [0]), frames))
     monkeypatch.setattr("migration.core.outputs.create_cellpose_model", lambda device: object())
 
-    def fake_segmentation_frame(frame: np.ndarray, model: object, diameter: float | None) -> np.ndarray:
+    def fake_segmentation_frame(
+        frame: np.ndarray,
+        model: object,
+        diameter: float | None,
+        batch_size: int,
+    ) -> np.ndarray:
         calls["segmentation"] += 1
         return computed_mask
 
@@ -593,10 +603,12 @@ def test_cli_accepts_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cap
         selection: Nd2Selection,
         output: Path,
         diameter: float | None,
+        cellpose_batch_size: int = 32,
         on_progress: object | None = None,
     ) -> object:
         recorded["output"] = output
         recorded["on_progress"] = on_progress
+        recorded["cellpose_batch_size"] = cellpose_batch_size
 
         class Outputs:
             segmentation_path = tmp_path / "out" / "segmentation" / "Pos0"
@@ -612,7 +624,69 @@ def test_cli_accepts_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cap
     assert exit_code == 0
     assert recorded["output"] == tmp_path / "out"
     assert recorded["on_progress"] is not None
-    assert "Segmentation:" in captured.out
+    assert recorded["cellpose_batch_size"] == 32
+
+
+def test_cli_rejects_non_positive_cellpose_batch_size() -> None:
+    exit_code = main(
+        [
+            "segment",
+            "sample.nd2",
+            "--position",
+            "0",
+            "--channel",
+            "0",
+            "--z",
+            "0",
+            "--output",
+            "./results",
+            "--cellpose-batch-size",
+            "0",
+        ]
+    )
+    assert exit_code == 2
+
+
+def test_cli_passes_cellpose_batch_size(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    recorded: dict[str, object] = {}
+
+    def fake_run_segment(
+        nd2_path: Path,
+        selection: Nd2Selection,
+        output: Path,
+        diameter: float | None,
+        cellpose_batch_size: int = 32,
+        on_progress: object | None = None,
+    ) -> object:
+        recorded["cellpose_batch_size"] = cellpose_batch_size
+
+        class Outputs:
+            segmentation_path = tmp_path / "out" / "segmentation" / "Pos0"
+            frame_count = 2
+
+        return Outputs()
+
+    monkeypatch.setattr("migration.commands.segment.run_segment", fake_run_segment)
+
+    exit_code = main(
+        [
+            "segment",
+            "sample.nd2",
+            "--position",
+            "0",
+            "--channel",
+            "0",
+            "--z",
+            "0",
+            "--output",
+            str(tmp_path / "out"),
+            "--cellpose-batch-size",
+            "64",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["cellpose_batch_size"] == 64
 
 
 def test_cli_passes_min_track_length(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

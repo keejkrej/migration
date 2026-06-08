@@ -8,7 +8,7 @@ import typer
 
 from migration.app import app
 from migration.core.nd2 import parse_channel_option
-from migration.core.types import Nd2Selection
+from migration.core.types import DEFAULT_CELLPOSE_BATCH_SIZE, Nd2Selection
 from migration.services.segment import run_segment
 from migration.utils.progress import RichProgressReporter
 
@@ -30,9 +30,15 @@ def segment(
         float | None,
         typer.Option(help="Optional Cellpose diameter hint in pixels."),
     ] = None,
+    cellpose_batch_size: Annotated[
+        int,
+        typer.Option(help="Number of 256x256 Cellpose tiles to run per GPU forward pass."),
+    ] = DEFAULT_CELLPOSE_BATCH_SIZE,
 ) -> None:
     if diameter is not None and diameter <= 0:
         raise typer.BadParameter("--diameter must be greater than 0", param_hint="--diameter")
+    if cellpose_batch_size <= 0:
+        raise typer.BadParameter("--cellpose-batch-size must be greater than 0", param_hint="--cellpose-batch-size")
 
     try:
         selected_channel = parse_channel_option(channel)
@@ -46,6 +52,7 @@ def segment(
             selection=Nd2Selection(position=position, channel=selected_channel, z=z),
             output=output,
             diameter=diameter,
+            cellpose_batch_size=cellpose_batch_size,
             on_progress=progress,
         )
     except Exception as exc:

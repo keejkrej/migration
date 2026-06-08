@@ -13,7 +13,7 @@ from migration.core.segmentation import (
     write_segmentation_frame,
 )
 from migration.core.nd2 import channel_selection_label, channel_selection_stem, frame_spatial_shape
-from migration.core.types import DeviceSpec, Nd2Selection, ProgressCallback
+from migration.core.types import DEFAULT_CELLPOSE_BATCH_SIZE, DeviceSpec, Nd2Selection, ProgressCallback
 from migration.utils.progress import emit_progress
 
 
@@ -45,6 +45,7 @@ def load_or_create_segmentation_masks(
     selection: Nd2Selection,
     device: DeviceSpec,
     diameter: float | None,
+    cellpose_batch_size: int = DEFAULT_CELLPOSE_BATCH_SIZE,
     on_progress: ProgressCallback | None = None,
     total_steps: int = 0,
 ) -> tuple[Path, np.ndarray]:
@@ -67,7 +68,7 @@ def load_or_create_segmentation_masks(
         if mask is None:
             if model is None:
                 model = create_cellpose_model(device)
-            mask = run_cellpose_segmentation_frame(frame, model, diameter)
+            mask = run_cellpose_segmentation_frame(frame, model, diameter, cellpose_batch_size)
             write_segmentation_frame(output_path, mask)
             progress_message = "Segmenting frames"
         else:
