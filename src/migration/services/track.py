@@ -81,6 +81,7 @@ def run_track(
         output_dir / f"{output_stem}_overlay.png",
         tracking_frames[0],
         rows,
+        masks[0],
     )
     trajectories_path = write_trajectories_csv(output_dir / f"{output_stem}_trajectories.csv", rows)
     emit_progress(
