@@ -25,6 +25,9 @@ from migration.core.overlay import normalize_frame_for_display
 from migration.core.types import Nd2Selection, TrajectoryRow
 
 CELL_COLORS = ("#4daf4a", "#80b1d3", "#fb9a99")  # green, light blue, pink
+PANEL_LABEL_FONT = 18
+COLUMN_TITLE_FONT = 14
+CELL_LABEL_FONT = 14
 
 
 @dataclass(frozen=True)
@@ -503,7 +506,7 @@ def draw_roi_panel(
             label_y,
             str(index + 1),
             color="white",
-            fontsize=11,
+            fontsize=CELL_LABEL_FONT,
             ha="center",
             va="center",
             bbox={"boxstyle": "round,pad=0.15", "facecolor": "black", "alpha": 0.45, "edgecolor": "none"},
@@ -605,7 +608,7 @@ def draw_cell_insets(ax_row: list[plt.Axes], crops: list[CellInsetCrop]) -> None
         ax.set_xlim(0, crop.width)
         ax.set_ylim(crop.height, 0)
         ax.set_aspect("equal", adjustable="box")
-        ax.set_title(str(crop.color_index + 1), fontsize=11, color="black", pad=2)
+        ax.set_title(str(crop.color_index + 1), fontsize=CELL_LABEL_FONT, color="black", pad=2)
         ax.set_xticks([])
         ax.set_yticks([])
         for spine in ax.spines.values():
@@ -692,15 +695,15 @@ def render_comparison_figure(
     plot_trajectories(ax_e, left, display_shape, min_track_length)
     plot_trajectories(ax_f, right, display_shape, min_track_length)
 
-    ax_a.text(-0.08, 1.03, "A", transform=ax_a.transAxes, fontsize=14, fontweight="bold", va="bottom")
-    ax_b.text(-0.08, 1.03, "B", transform=ax_b.transAxes, fontsize=14, fontweight="bold", va="bottom")
-    inset_left[0].text(-0.15, 1.18, "C", transform=inset_left[0].transAxes, fontsize=14, fontweight="bold", va="bottom")
-    inset_right[0].text(-0.15, 1.18, "D", transform=inset_right[0].transAxes, fontsize=14, fontweight="bold", va="bottom")
-    ax_e.text(-0.08, 1.03, "E", transform=ax_e.transAxes, fontsize=14, fontweight="bold", va="bottom")
-    ax_f.text(-0.08, 1.03, "F", transform=ax_f.transAxes, fontsize=14, fontweight="bold", va="bottom")
+    ax_a.text(-0.08, 1.03, "A", transform=ax_a.transAxes, fontsize=PANEL_LABEL_FONT, fontweight="bold", va="bottom")
+    ax_b.text(-0.08, 1.03, "B", transform=ax_b.transAxes, fontsize=PANEL_LABEL_FONT, fontweight="bold", va="bottom")
+    inset_left[0].text(-0.15, 1.18, "C", transform=inset_left[0].transAxes, fontsize=PANEL_LABEL_FONT, fontweight="bold", va="bottom")
+    inset_right[0].text(-0.15, 1.18, "D", transform=inset_right[0].transAxes, fontsize=PANEL_LABEL_FONT, fontweight="bold", va="bottom")
+    ax_e.text(-0.08, 1.03, "E", transform=ax_e.transAxes, fontsize=PANEL_LABEL_FONT, fontweight="bold", va="bottom")
+    ax_f.text(-0.08, 1.03, "F", transform=ax_f.transAxes, fontsize=PANEL_LABEL_FONT, fontweight="bold", va="bottom")
 
-    ax_a.text(0.5, 1.02, "patterned", transform=ax_a.transAxes, ha="center", va="bottom", fontsize=11)
-    ax_b.text(0.5, 1.02, "unpatterned", transform=ax_b.transAxes, ha="center", va="bottom", fontsize=11)
+    ax_a.text(0.5, 1.02, "patterned", transform=ax_a.transAxes, ha="center", va="bottom", fontsize=COLUMN_TITLE_FONT)
+    ax_b.text(0.5, 1.02, "unpatterned", transform=ax_b.transAxes, ha="center", va="bottom", fontsize=COLUMN_TITLE_FONT)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=200, facecolor="white")
