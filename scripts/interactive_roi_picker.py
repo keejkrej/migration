@@ -8,6 +8,7 @@ import json
 import sys
 from collections import deque
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Callable
 
@@ -137,6 +138,86 @@ def panel_roi_tuple(panel: PanelState) -> tuple[int, int, int, int]:
     return panel.roi_y0, panel.roi_x0, panel.roi_height, panel.roi_width
 
 
+def draw_panel_background(ax: plt.Axes, panel: PanelState) -> None:
+    ax.imshow(panel.frame, cmap="gray", vmin=0.0, vmax=1.0, origin="upper")
+    mask = np.asarray(panel.mask0, dtype=np.int32)
+    if mask.shape == panel.frame.shape and mask.max() > 0:
+        ax.contour(
+            mask,
+            levels=np.arange(0.5, mask.max() + 0.5, 1.0),
+            colors="cyan",
+            linewidths=0.35,
+            alpha=0.8,
+        )
+
+    track_lengths = {track_id: len(rows) for track_id, rows in panel.tracks.items()}
+    color_values = normalize_track_lengths(track_lengths)
+    cmap = plt.get_cmap("viridis")
+    for track_id in sorted(panel.tracks):
+        rows = panel.tracks[track_id]
+        xs = [row.x for row in rows]
+        ys = [row.y for row in rows]
+        color = cmap(color_values[track_id])
+        ax.plot(xs, ys, color=color, linewidth=0.8, alpha=0.55)
+
+
+def render_panel_background_png(panel: PanelState, *, dpi: int = 100) -> bytes:
+    import matplotlib
+
+    matplotlib.use("Agg")
+
+    height, width = panel.frame.shape
+    fig, ax = plt.subplots(figsize=(width / dpi, height / dpi), dpi=dpi, facecolor="white")
+    draw_panel_background(ax, panel)
+    ax.set_xlim(0, width)
+    ax.set_ylim(height, 0)
+    ax.set_axis_off()
+    fig.subplots_adjust(0, 0, 1, 1)
+    buffer = BytesIO()
+    fig.savefig(buffer, format="png", dpi=dpi, facecolor="white", pad_inches=0)
+    plt.close(fig)
+    return buffer.getvalue()
+
+
+def panel_selection_payload(panel: PanelState) -> dict:
+    y0, x0, height, width = panel_roi_tuple(panel)
+    return {
+        "position": panel.position,
+        "roi_y": y0,
+        "roi_x": x0,
+        "roi_height": height,
+        "roi_width": width,
+        "track_ids": list(panel.selected_ids),
+    }
+
+
+def build_selection_payload(data_dir: Path, left: PanelState, right: PanelState) -> dict:
+    return {
+        "data_dir": str(data_dir),
+        "left": panel_selection_payload(left),
+        "right": panel_selection_payload(right),
+    }
+
+
+def panel_marker_payload(panel: PanelState) -> list[dict]:
+    markers: list[dict] = []
+    for index, track_id in enumerate(panel.selected_ids):
+        centroid = track_centroid(panel.tracks[track_id])
+        if centroid is None:
+            continue
+        y, x = centroid
+        markers.append(
+            {
+                "track_id": track_id,
+                "x": x,
+                "y": y,
+                "color": CELL_COLORS[index % len(CELL_COLORS)],
+                "label": str(index + 1),
+            }
+        )
+    return markers
+
+
 class InteractiveROIPicker:
     def __init__(
         self,
@@ -180,30 +261,8 @@ class InteractiveROIPicker:
         self._update_status()
         self._connect_events()
 
-    def _draw_background(self, ax: plt.Axes, panel: PanelState) -> None:
-        ax.imshow(panel.frame, cmap="gray", vmin=0.0, vmax=1.0, origin="upper")
-        mask = np.asarray(panel.mask0, dtype=np.int32)
-        if mask.shape == panel.frame.shape and mask.max() > 0:
-            ax.contour(
-                mask,
-                levels=np.arange(0.5, mask.max() + 0.5, 1.0),
-                colors="cyan",
-                linewidths=0.35,
-                alpha=0.8,
-            )
-
-        track_lengths = {track_id: len(rows) for track_id, rows in panel.tracks.items()}
-        color_values = normalize_track_lengths(track_lengths)
-        cmap = plt.get_cmap("viridis")
-        for track_id in sorted(panel.tracks):
-            rows = panel.tracks[track_id]
-            xs = [row.x for row in rows]
-            ys = [row.y for row in rows]
-            color = cmap(color_values[track_id])
-            ax.plot(xs, ys, color=color, linewidth=0.8, alpha=0.55)
-
     def _draw_panel(self, ax: plt.Axes, panel: PanelState, title: str) -> None:
-        self._draw_background(ax, panel)
+        draw_panel_background(ax, panel)
         ax.set_title(title, fontsize=12)
         ax.set_xlim(0, panel.frame.shape[1])
         ax.set_ylim(panel.frame.shape[0], 0)
@@ -364,22 +423,7 @@ class InteractiveROIPicker:
         self.active_drag_panel = None
 
     def _selection_payload(self) -> dict:
-        def panel_payload(panel: PanelState) -> dict:
-            y0, x0, height, width = panel_roi_tuple(panel)
-            return {
-                "position": panel.position,
-                "roi_y": y0,
-                "roi_x": x0,
-                "roi_height": height,
-                "roi_width": width,
-                "track_ids": list(panel.selected_ids),
-            }
-
-        return {
-            "data_dir": str(self.data_dir),
-            "left": panel_payload(self.left),
-            "right": panel_payload(self.right),
-        }
+        return build_selection_payload(self.data_dir, self.left, self.right)
 
     def _update_status(self) -> None:
         left_ids = list(self.left.selected_ids)

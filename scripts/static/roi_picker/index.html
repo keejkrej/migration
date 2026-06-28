@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ROI Picker</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f6f8;
+        --panel: #ffffff;
+        --text: #1f2933;
+        --muted: #5f6c7b;
+        --accent: #2563eb;
+        --accent-soft: #dbeafe;
+        --gold: #ffd700;
+        --border: #d9e2ec;
+        --danger: #b42318;
+        --success: #067647;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      header {
+        padding: 1rem 1.5rem 0.5rem;
+      }
+
+      h1 {
+        margin: 0 0 0.25rem;
+        font-size: 1.35rem;
+        font-weight: 600;
+      }
+
+      .subtitle {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        padding: 0.75rem 1.5rem 1rem;
+      }
+
+      .mode-group {
+        display: inline-flex;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        overflow: hidden;
+        background: var(--panel);
+      }
+
+      .mode-group button {
+        border: 0;
+        background: transparent;
+        padding: 0.55rem 1rem;
+        cursor: pointer;
+        font: inherit;
+        color: var(--muted);
+      }
+
+      .mode-group button.active {
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-weight: 600;
+      }
+
+      .actions {
+        margin-left: auto;
+        display: flex;
+        gap: 0.5rem;
+      }
+
+      button.primary,
+      button.secondary {
+        border-radius: 0.6rem;
+        padding: 0.55rem 1rem;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button.primary {
+        border: 0;
+        background: var(--accent);
+        color: white;
+      }
+
+      button.secondary {
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+      }
+
+      .status {
+        padding: 0 1.5rem 1rem;
+        font-family: "IBM Plex Mono", "Consolas", monospace;
+        font-size: 0.85rem;
+        color: var(--muted);
+        min-height: 1.25rem;
+      }
+
+      .status.error {
+        color: var(--danger);
+      }
+
+      .status.success {
+        color: var(--success);
+      }
+
+      .panels {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+        padding: 0 1.5rem 1.5rem;
+      }
+
+      .panel-card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 0.9rem;
+        overflow: hidden;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+      }
+
+      .panel-card h2 {
+        margin: 0;
+        padding: 0.85rem 1rem 0.35rem;
+        font-size: 1rem;
+      }
+
+      .panel-meta {
+        padding: 0 1rem 0.75rem;
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+
+      .canvas-wrap {
+        position: relative;
+        width: 100%;
+        overflow: auto;
+        background: #111827;
+      }
+
+      canvas {
+        display: block;
+        max-width: 100%;
+        cursor: grab;
+      }
+
+      canvas.pick-mode {
+        cursor: crosshair;
+      }
+
+      canvas.dragging {
+        cursor: grabbing;
+      }
+
+      @media (max-width: 1100px) {
+        .panels {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Interactive ROI and cell picker</h1>
+      <p class="subtitle">
+        Drag the yellow ROI on each panel. In Pick cells mode, click three cells per side (a 4th replaces the 1st).
+      </p>
+    </header>
+
+    <div class="toolbar">
+      <div class="mode-group" role="group" aria-label="Tool mode">
+        <button id="mode-roi" class="active" type="button">Move ROI</button>
+        <button id="mode-pick" type="button">Pick cells</button>
+      </div>
+      <div class="actions">
+        <button id="save-json" class="secondary" type="button">Save JSON</button>
+        <button id="save-render" class="primary" type="button">Save &amp; render</button>
+      </div>
+    </div>
+
+    <div id="status" class="status">Loading session…</div>
+
+    <section class="panels">
+      <article class="panel-card">
+        <h2 id="left-title">patterned</h2>
+        <div id="left-meta" class="panel-meta"></div>
+        <div class="canvas-wrap">
+          <canvas id="left-canvas"></canvas>
+        </div>
+      </article>
+      <article class="panel-card">
+        <h2 id="right-title">unpatterned</h2>
+        <div id="right-meta" class="panel-meta"></div>
+        <div class="canvas-wrap">
+          <canvas id="right-canvas"></canvas>
+        </div>
+      </article>
+    </section>
+
+    <script>
+      const state = {
+        mode: "roi",
+        session: null,
+        panels: {},
+      };
+
+      const statusEl = document.getElementById("status");
+      const modeRoiBtn = document.getElementById("mode-roi");
+      const modePickBtn = document.getElementById("mode-pick");
+
+      function setStatus(message, kind = "") {
+        statusEl.textContent = message;
+        statusEl.className = `status${kind ? ` ${kind}` : ""}`;
+      }
+
+      function setMode(mode) {
+        state.mode = mode;
+        modeRoiBtn.classList.toggle("active", mode === "roi");
+        modePickBtn.classList.toggle("active", mode === "pick");
+        for (const panel of Object.values(state.panels)) {
+          panel.canvas.classList.toggle("pick-mode", mode === "pick");
+        }
+        updateStatusLine();
+      }
+
+      function panelMetaText(panel) {
+        return `Pos ${panel.position} · ROI (${panel.roi_y}, ${panel.roi_x}) · cells [${panel.track_ids.join(", ")}]`;
+      }
+
+      function updateStatusLine() {
+        if (!state.session) {
+          return;
+        }
+        const left = state.session.left;
+        const right = state.session.right;
+        setStatus(
+          `Mode: ${state.mode.toUpperCase()} | Left ROI=(${left.roi_y},${left.roi_x}) cells=${JSON.stringify(left.track_ids)} | Right ROI=(${right.roi_y},${right.roi_x}) cells=${JSON.stringify(right.track_ids)}`
+        );
+      }
+
+      function imageCoords(canvas, clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        return {
+          x: (clientX - rect.left) * scaleX,
+          y: (clientY - rect.top) * scaleY,
+        };
+      }
+
+      function pointInRoi(panel, x, y) {
+        return (
+          x >= panel.roi_x &&
+          x < panel.roi_x + panel.roi_width &&
+          y >= panel.roi_y &&
+          y < panel.roi_y + panel.roi_height
+        );
+      }
+
+      function clampRoi(panelState, roi_x, roi_y) {
+        return {
+          roi_x: Math.max(0, Math.min(Math.round(roi_x), panelState.width - panelState.roi_width)),
+          roi_y: Math.max(0, Math.min(Math.round(roi_y), panelState.height - panelState.roi_height)),
+        };
+      }
+
+      function drawOverlay(panelState, panelView) {
+        const { ctx, canvas, background } = panelView;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(background, 0, 0, canvas.width, canvas.height);
+
+        ctx.save();
+        ctx.strokeStyle = "#ffd700";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([10, 8]);
+        ctx.strokeRect(
+          panelState.roi_x,
+          panelState.roi_y,
+          panelState.roi_width,
+          panelState.roi_height
+        );
+        ctx.restore();
+
+        for (const marker of panelState.markers) {
+          ctx.beginPath();
+          ctx.fillStyle = marker.color;
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 2;
+          ctx.arc(marker.x, marker.y, 10, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "bold 12px IBM Plex Sans, sans-serif";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(marker.label, marker.x, marker.y);
+        }
+      }
+
+      async function loadBackground(side) {
+        const response = await fetch(`/api/background/${side}.png`);
+        if (!response.ok) {
+          throw new Error(`Failed to load ${side} background`);
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const image = new Image();
+        await new Promise((resolve, reject) => {
+          image.onload = resolve;
+          image.onerror = reject;
+          image.src = url;
+        });
+        URL.revokeObjectURL(url);
+        return image;
+      }
+
+      function bindPanel(side, canvas) {
+        const panelView = {
+          side,
+          canvas,
+          ctx: canvas.getContext("2d"),
+          background: null,
+          dragging: false,
+          dragOffsetX: 0,
+          dragOffsetY: 0,
+        };
+        state.panels[side] = panelView;
+
+        canvas.addEventListener("pointerdown", async (event) => {
+          if (!state.session) {
+            return;
+          }
+          canvas.setPointerCapture(event.pointerId);
+          const panelState = state.session[side];
+          const { x, y } = imageCoords(canvas, event.clientX, event.clientY);
+
+          if (state.mode === "pick") {
+            try {
+              const response = await fetch("/api/pick", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ side, x, y }),
+              });
+              if (!response.ok) {
+                throw new Error(await response.text());
+              }
+              const payload = await response.json();
+              panelState.track_ids = payload.track_ids;
+              panelState.markers = payload.markers;
+              drawOverlay(panelState, panelView);
+              document.getElementById(`${side}-meta`).textContent = panelMetaText(panelState);
+              updateStatusLine();
+            } catch (error) {
+              setStatus(`Pick failed: ${error.message}`, "error");
+            }
+            return;
+          }
+
+          if (pointInRoi(panelState, x, y)) {
+            panelView.dragging = true;
+            panelView.dragOffsetX = x - panelState.roi_x;
+            panelView.dragOffsetY = y - panelState.roi_y;
+            canvas.classList.add("dragging");
+          }
+        });
+
+        canvas.addEventListener("pointermove", (event) => {
+          if (!panelView.dragging || state.mode !== "roi" || !state.session) {
+            return;
+          }
+          const panelState = state.session[side];
+          const { x, y } = imageCoords(canvas, event.clientX, event.clientY);
+          const next = clampRoi(
+            panelState,
+            x - panelView.dragOffsetX,
+            y - panelView.dragOffsetY
+          );
+          panelState.roi_x = next.roi_x;
+          panelState.roi_y = next.roi_y;
+          drawOverlay(panelState, panelView);
+          document.getElementById(`${side}-meta`).textContent = panelMetaText(panelState);
+          updateStatusLine();
+        });
+
+        const endDrag = async () => {
+          if (!panelView.dragging || !state.session) {
+            panelView.dragging = false;
+            canvas.classList.remove("dragging");
+            return;
+          }
+          panelView.dragging = false;
+          canvas.classList.remove("dragging");
+
+          if (state.mode !== "roi") {
+            return;
+          }
+
+          const panelState = state.session[side];
+          try {
+            const response = await fetch("/api/roi", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                side,
+                roi_x: panelState.roi_x,
+                roi_y: panelState.roi_y,
+              }),
+            });
+            if (!response.ok) {
+              throw new Error(await response.text());
+            }
+            const payload = await response.json();
+            Object.assign(panelState, payload);
+            drawOverlay(panelState, panelView);
+            document.getElementById(`${side}-meta`).textContent = panelMetaText(panelState);
+            updateStatusLine();
+          } catch (error) {
+            setStatus(`ROI update failed: ${error.message}`, "error");
+          }
+        };
+        canvas.addEventListener("pointerup", endDrag);
+        canvas.addEventListener("pointercancel", endDrag);
+        canvas.addEventListener("lostpointercapture", endDrag);
+      }
+
+      async function refreshSession() {
+        const response = await fetch("/api/state");
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        state.session = await response.json();
+
+        for (const side of ["left", "right"]) {
+          const panelState = state.session[side];
+          const panelView = state.panels[side];
+          document.getElementById(`${side}-title`).textContent = panelState.title;
+          document.getElementById(`${side}-meta`).textContent = panelMetaText(panelState);
+
+          if (!panelView.background) {
+            panelView.background = await loadBackground(side);
+          }
+
+          panelView.canvas.width = panelState.width;
+          panelView.canvas.height = panelState.height;
+          drawOverlay(panelState, panelView);
+        }
+
+        updateStatusLine();
+      }
+
+      async function saveSelection(render) {
+        try {
+          const response = await fetch("/api/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ render }),
+          });
+          if (!response.ok) {
+            const detail = await response.json().catch(() => ({ detail: "Save failed" }));
+            throw new Error(detail.detail || "Save failed");
+          }
+          const payload = await response.json();
+          if (payload.figure_path) {
+            setStatus(`Saved ${payload.selection_path} and rendered ${payload.figure_path}`, "success");
+          } else {
+            setStatus(`Saved ${payload.selection_path}`, "success");
+          }
+        } catch (error) {
+          setStatus(error.message, "error");
+        }
+      }
+
+      modeRoiBtn.addEventListener("click", () => setMode("roi"));
+      modePickBtn.addEventListener("click", () => setMode("pick"));
+      document.getElementById("save-json").addEventListener("click", () => saveSelection(false));
+      document.getElementById("save-render").addEventListener("click", () => saveSelection(true));
+
+      window.addEventListener("keydown", (event) => {
+        if (event.target && ["INPUT", "TEXTAREA"].includes(event.target.tagName)) {
+          return;
+        }
+        if (event.key === "r") {
+          setMode("roi");
+        } else if (event.key === "p") {
+          setMode("pick");
+        } else if (event.key === "s") {
+          saveSelection(true);
+        }
+      });
+
+      bindPanel("left", document.getElementById("left-canvas"));
+      bindPanel("right", document.getElementById("right-canvas"));
+      setMode("roi");
+
+      refreshSession().catch((error) => setStatus(`Failed to load session: ${error.message}`, "error"));
+    </script>
+  </body>
+</html>

@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "cellpose>=4.1.0",
+    "fastapi>=0.115.0",
     "matplotlib>=3.10.0",
     "mdat",
     "numpy>=2.2,<2.4",
@@ -20,6 +21,7 @@ dependencies = [
     "trackastra>=0.5.2",
     "torch>=2.0",
     "typer>=0.24.0",
+    "uvicorn[standard]>=0.34.0",
 ]
 
 [project.scripts]
