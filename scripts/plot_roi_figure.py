@@ -17,6 +17,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.gridspec import GridSpec
+from matplotlib.patches import Rectangle
 
 from migration.core.fusion import fuse_frames_for_tracking
 from migration.core.nd2 import parse_channel_option
@@ -47,6 +48,7 @@ class CellInsetCrop:
     width: int
     height: int
     color_index: int
+    origin: tuple[int, int]  # (y0, x0) of the crop within the ROI-local frame
 
 
 def load_run_tiff_module():
@@ -483,6 +485,7 @@ def draw_roi_panel(
     ax: plt.Axes,
     panel: PositionPanelData,
     display_shape: tuple[int, int],
+    insets: list[CellInsetCrop] | None = None,
 ) -> None:
     y0, x0, height, width = panel.roi
     display_height, display_width = display_shape
@@ -512,62 +515,95 @@ def draw_roi_panel(
             bbox={"boxstyle": "round,pad=0.15", "facecolor": "black", "alpha": 0.45, "edgecolor": "none"},
         )
 
+    # Dashed outline of the (equal-size) crop shown for this cell in the C/D
+    # inset panels, so the reader can see exactly which sub-region is zoomed.
+    if insets is not None:
+        for inset in insets:
+            oy, ox = inset.origin
+            ax.add_patch(
+                Rectangle(
+                    (ox, oy), inset.width, inset.height,
+                    fill=False, linestyle="--", linewidth=1.4,
+                    edgecolor=CELL_COLORS[inset.color_index], zorder=8,
+                )
+            )
 
-def compute_cell_inset_crop(
-    frame_roi: np.ndarray,
-    cell_mask: np.ndarray,
-    color_index: int,
-    inset_padding: int,
+
+def cell_center_and_natural_size(
+    panel: PositionPanelData,
+    track_id: int,
     *,
-    fallback_center: tuple[float, float] | None = None,
-) -> CellInsetCrop:
-    roi_height, roi_width = frame_roi.shape
+    fallback_size: int,
+) -> tuple[tuple[float, float], int]:
+    """ROI-local (cy, cx) center and natural (unpadded) bounding-box size of a cell."""
+    y0, x0, roi_height, roi_width = panel.roi
+    cell_mask = crop(mask_for_track(panel.mask0, panel.tracks[track_id]), panel.roi)
     if cell_mask.any():
         ys, xs = np.where(cell_mask)
-        y0, y1 = int(ys.min()), int(ys.max())
-        x0, x1 = int(xs.min()), int(xs.max())
-    elif fallback_center is not None:
-        cy, cx = fallback_center
-        half = max(inset_padding, 20)
-        y0, y1 = int(round(cy)) - half, int(round(cy)) + half
-        x0, x1 = int(round(cx)) - half, int(round(cx)) + half
-    else:
-        y0, x0, y1, x1 = 0, 0, roi_height - 1, roi_width - 1
+        cy = (float(ys.min()) + float(ys.max())) / 2.0
+        cx = (float(xs.min()) + float(xs.max())) / 2.0
+        natural_size = int(max(ys.max() - ys.min() + 1, xs.max() - xs.min() + 1))
+        return (cy, cx), natural_size
 
-    y0 = max(0, y0 - inset_padding)
-    x0 = max(0, x0 - inset_padding)
-    y1 = min(roi_height - 1, y1 + inset_padding)
-    x1 = min(roi_width - 1, x1 + inset_padding)
-
-    frame_crop = frame_roi[y0 : y1 + 1, x0 : x1 + 1]
-    mask_crop = cell_mask[y0 : y1 + 1, x0 : x1 + 1]
-    return CellInsetCrop(
-        frame_crop=frame_crop,
-        mask_crop=mask_crop,
-        width=frame_crop.shape[1],
-        height=frame_crop.shape[0],
-        color_index=color_index,
-    )
+    centroid = track_centroid(panel.tracks[track_id])
+    if centroid is not None:
+        return (centroid[0] - y0, centroid[1] - x0), fallback_size
+    return (roi_height / 2.0, roi_width / 2.0), fallback_size
 
 
-def prepare_cell_inset_crops(panel: PositionPanelData, inset_padding: int) -> list[CellInsetCrop]:
-    y0, x0, _, _ = panel.roi
+def uniform_inset_crop_size(
+    panels: list[PositionPanelData],
+    inset_padding: int,
+    *,
+    fallback_size: int = 40,
+) -> int:
+    """Largest natural cell bounding-box size across all selected cells (both sides).
+
+    Used so every C/D inset panel shows an equal-size, directly comparable
+    crop rather than one tightly fit to each individual cell.
+    """
+    max_natural = 0
+    for panel in panels:
+        for track_id in panel.selected_ids:
+            _, natural_size = cell_center_and_natural_size(panel, track_id, fallback_size=fallback_size)
+            max_natural = max(max_natural, natural_size)
+    return max_natural + 2 * inset_padding
+
+
+def fixed_square_crop(
+    frame_roi: np.ndarray,
+    cell_mask: np.ndarray,
+    center: tuple[float, float],
+    crop_size: int,
+) -> tuple[np.ndarray, np.ndarray, int, int]:
+    roi_height, roi_width = frame_roi.shape
+    size = min(crop_size, roi_height, roi_width)
+    half = size // 2
+    cy, cx = center
+    y0 = int(round(cy)) - half
+    x0 = int(round(cx)) - half
+    y0 = max(0, min(y0, roi_height - size))
+    x0 = max(0, min(x0, roi_width - size))
+    frame_crop = frame_roi[y0 : y0 + size, x0 : x0 + size]
+    mask_crop = cell_mask[y0 : y0 + size, x0 : x0 + size]
+    return frame_crop, mask_crop, y0, x0
+
+
+def prepare_cell_inset_crops(panel: PositionPanelData, crop_size: int) -> list[CellInsetCrop]:
     frame_roi = crop(panel.frame, panel.roi)
     crops: list[CellInsetCrop] = []
     for index, track_id in enumerate(panel.selected_ids):
         cell_mask = crop(mask_for_track(panel.mask0, panel.tracks[track_id]), panel.roi)
-        fallback_center: tuple[float, float] | None = None
-        if not cell_mask.any():
-            centroid = track_centroid(panel.tracks[track_id])
-            if centroid is not None:
-                fallback_center = (centroid[0] - y0, centroid[1] - x0)
+        center, _ = cell_center_and_natural_size(panel, track_id, fallback_size=crop_size)
+        frame_crop_arr, mask_crop_arr, oy, ox = fixed_square_crop(frame_roi, cell_mask, center, crop_size)
         crops.append(
-            compute_cell_inset_crop(
-                frame_roi,
-                cell_mask,
-                index,
-                inset_padding,
-                fallback_center=fallback_center,
+            CellInsetCrop(
+                frame_crop=frame_crop_arr,
+                mask_crop=mask_crop_arr,
+                width=frame_crop_arr.shape[1],
+                height=frame_crop_arr.shape[0],
+                color_index=index,
+                origin=(oy, ox),
             )
         )
     return crops
@@ -587,10 +623,8 @@ def inset_row_height_ratio(left_crops: list[CellInsetCrop], right_crops: list[Ce
 def add_cell_inset_axes(
     fig: plt.Figure,
     col_spec,
-    panel: PositionPanelData,
-    inset_padding: int,
+    crops: list[CellInsetCrop],
 ) -> list[plt.Axes]:
-    crops = prepare_cell_inset_crops(panel, inset_padding)
     width_ratios = [max(crop.width, 1) for crop in crops]
     inset_grid = col_spec[1].subgridspec(1, 3, width_ratios=width_ratios, wspace=0.12)
     axes = [fig.add_subplot(inset_grid[0, index]) for index in range(3)]
@@ -669,8 +703,9 @@ def render_comparison_figure(
         track_ids=right_track_ids,
     )
 
-    left_crops = prepare_cell_inset_crops(left, inset_padding)
-    right_crops = prepare_cell_inset_crops(right, inset_padding)
+    crop_size = uniform_inset_crop_size([left, right], inset_padding)
+    left_crops = prepare_cell_inset_crops(left, crop_size)
+    right_crops = prepare_cell_inset_crops(right, crop_size)
     inset_row_height = inset_row_height_ratio(left_crops, right_crops)
 
     _, _, left_height, left_width = left.roi
@@ -687,11 +722,11 @@ def render_comparison_figure(
     ax_b = fig.add_subplot(right_col[0])
     ax_f = fig.add_subplot(right_col[2])
 
-    draw_roi_panel(ax_a, left, display_shape)
-    draw_roi_panel(ax_b, right, display_shape)
+    draw_roi_panel(ax_a, left, display_shape, insets=left_crops)
+    draw_roi_panel(ax_b, right, display_shape, insets=right_crops)
 
-    inset_left = add_cell_inset_axes(fig, left_col, left, inset_padding)
-    inset_right = add_cell_inset_axes(fig, right_col, right, inset_padding)
+    inset_left = add_cell_inset_axes(fig, left_col, left_crops)
+    inset_right = add_cell_inset_axes(fig, right_col, right_crops)
 
     # E/F use a separate, looser minimum-track-length filter than the rest of
     # the pipeline (A-D rely on the fixed min_track_length for reproducible
