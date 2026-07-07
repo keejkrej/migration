@@ -634,6 +634,7 @@ def render_comparison_figure(
     inner_margin_px: int | None,
     left_track_ids: list[int] | None = None,
     right_track_ids: list[int] | None = None,
+    trajectory_min_track_length: int | None = None,
 ) -> Path:
     left = load_position_data(
         data_dir,
@@ -692,8 +693,16 @@ def render_comparison_figure(
     inset_left = add_cell_inset_axes(fig, left_col, left, inset_padding)
     inset_right = add_cell_inset_axes(fig, right_col, right, inset_padding)
 
-    plot_trajectories(ax_e, left, display_shape, min_track_length)
-    plot_trajectories(ax_f, right, display_shape, min_track_length)
+    # E/F use a separate, looser minimum-track-length filter than the rest of
+    # the pipeline (A-D rely on the fixed min_track_length for reproducible
+    # ROI/cell selection): a lower bar here surfaces moderately long-lived
+    # tracks the stricter global threshold would otherwise drop, sharpening
+    # the mobility contrast between the two conditions.
+    traj_min_track_length = (
+        trajectory_min_track_length if trajectory_min_track_length is not None else min_track_length
+    )
+    plot_trajectories(ax_e, left, display_shape, traj_min_track_length)
+    plot_trajectories(ax_f, right, display_shape, traj_min_track_length)
 
     ax_a.text(-0.08, 1.03, "A", transform=ax_a.transAxes, fontsize=PANEL_LABEL_FONT, fontweight="bold", va="bottom")
     ax_b.text(-0.08, 1.03, "B", transform=ax_b.transAxes, fontsize=PANEL_LABEL_FONT, fontweight="bold", va="bottom")
@@ -707,6 +716,7 @@ def render_comparison_figure(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=200, facecolor="white")
+    fig.savefig(output_path.with_suffix(".svg"), format="svg", facecolor="white")
     plt.close(fig)
 
     for label, panel in (("Left", left), ("Right", right)):
@@ -732,6 +742,7 @@ def _render_from_selection_payload(
     cell_rank: int,
     inner_margin_fraction: float,
     inner_margin_px: int | None,
+    trajectory_min_track_length: int | None = None,
 ) -> Path:
     left_side = payload["left"]
     right_side = payload["right"]
@@ -759,6 +770,7 @@ def _render_from_selection_payload(
         inner_margin_px=inner_margin_px,
         left_track_ids=left_track_ids,
         right_track_ids=right_track_ids,
+        trajectory_min_track_length=trajectory_min_track_length,
     )
 
 
@@ -793,6 +805,7 @@ def run_interactive_mode(
             cell_rank=args.cell_rank,
             inner_margin_fraction=args.roi_inner_margin_fraction,
             inner_margin_px=args.roi_inner_margin_px,
+            trajectory_min_track_length=args.trajectory_min_track_length,
         )
         print(f"Wrote {figure_path}")
 
@@ -838,6 +851,13 @@ def main(argv: list[str] | None = None) -> int:
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--min-track-length", type=int, default=50)
+    parser.add_argument(
+        "--trajectory-min-track-length",
+        type=int,
+        default=None,
+        help="Looser min-track-length override for the E/F trajectory panels only "
+        "(defaults to --min-track-length if not given)",
+    )
     parser.add_argument(
         "--roi-rank",
         type=int,
@@ -929,6 +949,7 @@ def main(argv: list[str] | None = None) -> int:
             inner_margin_px=args.roi_inner_margin_px,
             left_track_ids=left_track_ids,
             right_track_ids=right_track_ids,
+            trajectory_min_track_length=args.trajectory_min_track_length,
         )
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
