@@ -721,7 +721,7 @@ def render_comparison_figure(
     # Size rows so each lettered panel (A–F) gets the same display width while
     # keeping native aspect ratios: square ROI rows share height = column width;
     # the three-square morphology row needs height = column_width / 3.
-    panel_width_in = 4.25
+    panel_width_in = 6.0
     top_row_in = panel_width_in / roi_aspect
     mid_row_in = panel_width_in * inset_row_height_ratio(left_crops, right_crops)
     fig_w = 2 * panel_width_in + 1.0

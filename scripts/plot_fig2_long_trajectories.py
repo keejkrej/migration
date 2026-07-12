@@ -34,7 +34,7 @@ from scipy.spatial import cKDTree
 
 # --- Constants (matched to plot_roi_figure.py) ---------------------------
 DATA_DIR = Path("/home/jack/data/lisca_review/fig2/20260519")
-OUT_DIR = Path("/home/jack/workspace/lisca-paper/figs")
+OUT_DIR = Path(__file__).resolve().parent.parent / "results"
 
 PANEL_LABEL_FONT = 20
 CELL_LABEL_FONT = 14
@@ -75,30 +75,8 @@ class Fig2Variant:
 FIG2_VARIANTS = (
     Fig2Variant(
         name="A549",
-        output_name="fig2.svg",
+        output_name="fig2_long_trajectories.svg",
         selection=json.loads((DATA_DIR / "roi_cell_selection.json").read_text()),
-    ),
-    Fig2Variant(
-        name="MDA-231",
-        output_name="fig2_mda231.svg",
-        selection={
-            "left": {
-                "position": 2,
-                "roi_y": 765,
-                "roi_x": 1024,
-                "roi_height": 1022,
-                "roi_width": 1024,
-                "track_ids": [55, 11, 12],
-            },
-            "right": {
-                "position": 44,
-                "roi_y": 1020,
-                "roi_x": 1024,
-                "roi_height": 1022,
-                "roi_width": 1024,
-                "track_ids": [97, 94, 34],
-            },
-        },
     ),
 )
 
