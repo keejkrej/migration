@@ -609,15 +609,21 @@ def prepare_cell_inset_crops(panel: PositionPanelData, crop_size: int) -> list[C
     return crops
 
 
-def inset_row_height_ratio(left_crops: list[CellInsetCrop], right_crops: list[CellInsetCrop]) -> float:
-    aspect_ratios = [
-        crop.height / max(crop.width, 1)
-        for crop in (*left_crops, *right_crops)
-        if crop.width > 0 and crop.height > 0
-    ]
-    if not aspect_ratios:
-        return 0.42
-    return float(np.clip(max(aspect_ratios) * 0.5, 0.28, 0.65))
+def inset_row_height_ratio(
+    left_crops: list[CellInsetCrop],
+    right_crops: list[CellInsetCrop],
+    *,
+    n_insets: int = 3,
+) -> float:
+    """Middle-row height ratio so the C/D strip matches A/B/E/F panel width.
+
+    Three square insets in a row need row height ≈ column_width / 3 (same
+    display units as the square ROI panels above/below).  Using a taller
+    middle row shrinks each inset to stay square, so the morphology row ends
+    up narrower than the trajectory panels.
+    """
+    _ = (left_crops, right_crops)  # kept for call-site compatibility
+    return 1.0 / n_insets
 
 
 def add_cell_inset_axes(
@@ -626,7 +632,7 @@ def add_cell_inset_axes(
     crops: list[CellInsetCrop],
 ) -> list[plt.Axes]:
     width_ratios = [max(crop.width, 1) for crop in crops]
-    inset_grid = col_spec[1].subgridspec(1, 3, width_ratios=width_ratios, wspace=0.12)
+    inset_grid = col_spec[1].subgridspec(1, 3, width_ratios=width_ratios, wspace=0.04)
     axes = [fig.add_subplot(inset_grid[0, index]) for index in range(3)]
     draw_cell_insets(axes, crops)
     return axes
@@ -706,16 +712,26 @@ def render_comparison_figure(
     crop_size = uniform_inset_crop_size([left, right], inset_padding)
     left_crops = prepare_cell_inset_crops(left, crop_size)
     right_crops = prepare_cell_inset_crops(right, crop_size)
-    inset_row_height = inset_row_height_ratio(left_crops, right_crops)
 
     _, _, left_height, left_width = left.roi
     _, _, right_height, right_width = right.roi
     display_shape = (max(left_height, right_height), max(left_width, right_width))
+    roi_aspect = display_shape[1] / display_shape[0]
 
-    fig = plt.figure(figsize=(10.5, 10.0), facecolor="white")
+    # Size rows so each lettered panel (A–F) gets the same display width while
+    # keeping native aspect ratios: square ROI rows share height = column width;
+    # the three-square morphology row needs height = column_width / 3.
+    panel_width_in = 4.25
+    top_row_in = panel_width_in / roi_aspect
+    mid_row_in = panel_width_in * inset_row_height_ratio(left_crops, right_crops)
+    fig_w = 2 * panel_width_in + 1.0
+    fig_h = 2 * top_row_in + mid_row_in + 1.1
+    row_height_ratios = [top_row_in, mid_row_in, top_row_in]
+
+    fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
     gs = GridSpec(1, 2, figure=fig, width_ratios=[1, 1], wspace=0.12)
-    left_col = gs[0].subgridspec(3, 1, height_ratios=[1.0, inset_row_height, 1.0], hspace=0.22)
-    right_col = gs[1].subgridspec(3, 1, height_ratios=[1.0, inset_row_height, 1.0], hspace=0.22)
+    left_col = gs[0].subgridspec(3, 1, height_ratios=row_height_ratios, hspace=0.22)
+    right_col = gs[1].subgridspec(3, 1, height_ratios=row_height_ratios, hspace=0.22)
 
     ax_a = fig.add_subplot(left_col[0])
     ax_e = fig.add_subplot(left_col[2])
@@ -750,8 +766,11 @@ def render_comparison_figure(
     ax_b.text(0.5, 1.02, "unpatterned", transform=ax_b.transAxes, ha="center", va="bottom", fontsize=COLUMN_TITLE_FONT)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200, facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), format="svg", facecolor="white")
+    if output_path.suffix.lower() == ".svg":
+        fig.savefig(output_path, format="svg", facecolor="white")
+    else:
+        fig.savefig(output_path, dpi=200, facecolor="white")
+        fig.savefig(output_path.with_suffix(".svg"), format="svg", facecolor="white")
     plt.close(fig)
 
     for label, panel in (("Left", left), ("Right", right)):
