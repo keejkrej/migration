@@ -6,6 +6,8 @@ import numpy as np
 
 from migration.core.types import TrajectoryRow
 
+DEFAULT_TRAJECTORY_COLOR = "#ff3b30"
+
 
 def normalize_frame_for_display(frame: np.ndarray) -> np.ndarray:
     image = np.asarray(frame, dtype=np.float32)
@@ -50,6 +52,8 @@ def render_trajectory_overlay(
     first_frame: np.ndarray,
     rows: list[TrajectoryRow],
     first_mask: np.ndarray | None = None,
+    *,
+    trajectory_color: str = DEFAULT_TRAJECTORY_COLOR,
 ) -> Path:
     import matplotlib
 
@@ -83,16 +87,12 @@ def render_trajectory_overlay(
     for row in rows:
         tracks_by_id.setdefault(row.track_id, []).append(row)
 
-    track_lengths = {track_id: len(points) for track_id, points in tracks_by_id.items()}
-    color_values = normalize_track_lengths(track_lengths)
-    cmap = plt.get_cmap("viridis")
     for track_id in sorted(tracks_by_id):
         points = sorted(tracks_by_id[track_id], key=lambda row: row.frame)
         xs = [point.x for point in points]
         ys = [point.y for point in points]
-        color = cmap(color_values[track_id])
-        ax.plot(xs, ys, color=color, linewidth=1.5, alpha=0.9)
-        ax.scatter(xs[:1], ys[:1], color=[color], s=10, alpha=0.9)
+        ax.plot(xs, ys, color=trajectory_color, linewidth=1.6, alpha=0.95)
+        ax.scatter(xs[:1], ys[:1], color=[trajectory_color], s=12, alpha=0.95)
 
     fig.savefig(output_path, dpi=dpi, facecolor="black", bbox_inches="tight", pad_inches=0)
     plt.close(fig)

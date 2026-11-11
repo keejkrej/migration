@@ -312,18 +312,26 @@ def test_write_trajectories_csv_writes_header_and_rows(tmp_path: Path) -> None:
 
 def test_render_trajectory_overlay_writes_png(tmp_path: Path) -> None:
     output_path = tmp_path / "overlay.png"
-    frame = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    frame = np.zeros((32, 32), dtype=np.uint16)
     rows = [
-        TrajectoryRow(track_id=1, parent_track_id=None, frame=0, y=1.0, x=1.0),
-        TrajectoryRow(track_id=1, parent_track_id=None, frame=1, y=2.0, x=2.0),
-        TrajectoryRow(track_id=2, parent_track_id=None, frame=0, y=5.0, x=5.0),
-        TrajectoryRow(track_id=2, parent_track_id=None, frame=1, y=6.0, x=6.0),
+        TrajectoryRow(track_id=1, parent_track_id=None, frame=0, y=4.0, x=4.0),
+        TrajectoryRow(track_id=1, parent_track_id=None, frame=1, y=4.0, x=20.0),
+        TrajectoryRow(track_id=2, parent_track_id=None, frame=0, y=24.0, x=4.0),
+        TrajectoryRow(track_id=2, parent_track_id=None, frame=1, y=24.0, x=12.0),
+        TrajectoryRow(track_id=2, parent_track_id=None, frame=2, y=24.0, x=20.0),
+        TrajectoryRow(track_id=2, parent_track_id=None, frame=3, y=24.0, x=28.0),
     ]
 
     render_trajectory_overlay(output_path, frame, rows)
 
     assert output_path.exists()
     assert output_path.stat().st_size > 0
+    from PIL import Image
+
+    rgb = np.asarray(Image.open(output_path).convert("RGB"))
+    # Both short (track 1) and long (track 2) rows should render with uniform high-red color
+    assert rgb[4, 12, 0] > 180 and rgb[4, 12, 0] > rgb[4, 12, 1] + 80
+    assert rgb[24, 12, 0] > 180 and rgb[24, 12, 0] > rgb[24, 12, 1] + 80
 
 
 def test_segmentation_frame_cache_is_usable_accepts_multichannel_frames() -> None:
